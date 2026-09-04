@@ -1,0 +1,128 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (example: 1.0.0.0)"
+        required: true
+        type: string
+      title:
+        description: "Release title (optional)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark as prerelease"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get previous version tag
+        id: previous_tag
+        shell: pwsh
+        run: |
+          $tags = git tag --list 'v*' --sort=-version:refname | Where-Object { $_ -ne "v${{ inputs.version }}" }
+          $previousTag = $tags | Select-Object -First 1
+          if (-not $previousTag) {
+            Write-Host "No previous version tags found"
+            "previous_tag=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            Write-Host "Previous tag: $previousTag"
+            "previous_tag=$previousTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Generate changelog from git log
+        id: changelog
+        shell: pwsh
+        run: |
+          $tag = "v${{ inputs.version }}"
+          $previous = "${{ steps.previous_tag.outputs.previous_tag }}"
+          $changelog = @()
+
+          if ($previous) {
+            $changelog += "## What's Changed since $previous"
+            $changelog += ""
+
+            # Get full commit log with author names
+            $log = git log "$previous..HEAD" --format="* %s by %an (%h)"
+            if ($log) {
+              $changelog += $log
+            } else {
+              $changelog += "* No new commits between $previous and $tag"
+            }
+          } else {
+            $changelog += "## What's Changed"
+            $changelog += ""
+
+            $log = git log --format="* %s by %an (%h)"
+            if ($log) {
+              $changelog += $log
+            } else {
+              $changelog += "* Initial release"
+            }
+          }
+
+          $changelog += ""
+          $changelog += "---"
+          $changelog += ""
+
+          if ($previous) {
+            $changelog += "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$previous...$tag"
+          } else {
+            $changelog += "**Full Changelog**: https://github.com/${{ github.repository }}/commits/$tag"
+          }
+
+          $body = $changelog -join "`r`n"
+          Set-Content -Path changelog.md -Value $body -Encoding utf8
+          Write-Host "Changelog generated:"
+          Write-Host $body
+
+      - name: Create and push tag
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          $tag = "v${{ inputs.version }}"
+          Write-Host "Creating tag $tag"
+
+          git tag $tag
+          git push origin $tag
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore GreenLuma-Manager.csproj
+
+      - name: Build Release
+        run: dotnet build GreenLuma-Manager.csproj --configuration Release --no-restore
+
+      - name: Publish single-file executable
+        run: dotnet publish GreenLuma-Manager.csproj -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=false -o ./publish
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: ${{ inputs.title || format('v{0}', inputs.version) }}
+          body_path: changelog.md
+          prerelease: ${{ inputs.prerelease }}
+          files: ./publish/GreenLuma-Manager.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

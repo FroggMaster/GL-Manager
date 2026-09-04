@@ -1,0 +1,50 @@
+name: CI Builds
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore GreenLuma-Manager.csproj
+
+      - name: Build Release
+        run: dotnet build GreenLuma-Manager.csproj --configuration Release --no-restore
+
+      - name: Publish single-file
+        run: dotnet publish GreenLuma-Manager.csproj -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=false -o ./publish
+
+      - name: Set short commit SHA
+        id: vars
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          Write-Output "shortSha=$shortSha" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Rename EXE with short commit SHA
+        run: |
+          Rename-Item -Path ./publish/GreenLuma-Manager.exe -NewName "GreenLuma-Manager-CI-$env:shortSha.exe"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GreenLuma-Manager-CI-${{ env.shortSha }}
+          path: ./publish/GreenLuma-Manager-CI-${{ env.shortSha }}.exe
