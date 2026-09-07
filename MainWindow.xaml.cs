@@ -705,6 +705,41 @@ public partial class MainWindow
                 return;
             }
 
+            // Check for legacy AppList that needs conversion (GreenLuma 1.8.0+)
+            if (GreenLumaService.HasLegacyAppList(_config))
+            {
+                Logger.Warn("Legacy AppList folder detected, prompting for conversion");
+                var (installedVersion, _) = GreenLumaService.DetectInstalledVersion(_config.GreenLumaPath);
+                var versionStr = installedVersion != null ? $"v{installedVersion}" : "unknown version";
+                
+                var convertResult = CustomMessageBox.Show(
+                    $"Legacy AppList format detected (AppList folder with .txt files).\n\n" +
+                    $"You are running GreenLuma {versionStr} which uses the new AppList.ini format.\n\n" +
+                    $"Would you like to automatically convert your existing AppList to the new format?",
+                    "Legacy AppList Detected",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (convertResult == MessageBoxResult.Yes)
+                {
+                    Logger.Info("User chose to convert legacy AppList");
+                    if (GreenLumaService.ConvertAppListFolderToIni(_config.GreenLumaPath!, out var convertError))
+                    {
+                        _notificationManager.ShowToast("AppList converted to new format successfully");
+                        Logger.Info("Legacy AppList conversion successful");
+                    }
+                    else
+                    {
+                        Logger.Warn($"Legacy AppList conversion failed: {convertError}");
+                        _notificationManager.ShowToast($"AppList conversion failed: {convertError}", false);
+                    }
+                }
+                else
+                {
+                    Logger.Info("User declined legacy AppList conversion");
+                }
+            }
+
             if (!GreenLumaService.IsAppListGenerated(_config))
             {
                 Logger.Warn("No AppList found, prompting user to generate");

@@ -121,6 +121,10 @@ public static partial class GreenLumaDeploymentService
             var extractedYear = DetectYearFromFiles(availableFiles.Keys);
             Logger.Debug($" Detected year: {extractedYear ?? "(none)"}");
 
+            // Capture installed version BEFORE deployment for AppList conversion check
+            var (installedVersion, _) = GreenLumaService.DetectInstalledVersion(greenLumaPath);
+            Logger.Debug($" Installed GreenLuma version before deployment: {installedVersion}");
+
             Report("Detecting installation type...");
 
             // ── Step 3: Determine installation type ─────────────────
@@ -192,6 +196,29 @@ public static partial class GreenLumaDeploymentService
             catch (Exception ex)
             {
                 Logger.Error(ex, "TMP cleanup failed (non-critical)");
+            }
+
+            // ── Step 7: Extract and save AppList template from ZIP ──────────
+            Report("Saving AppList template...");
+            SaveAppListTemplateFromZip(availableFiles, sourceDir, greenLumaPath);
+
+            // ── Step 8: AppList conversion (old format → new INI format) ────
+            // Check if we're updating from GreenLuma < 1.8.0 and need to convert
+            // Use the version captured BEFORE deployment
+            Report("Checking AppList format...");
+            if (GreenLumaService.IsAppListConversionNeeded(greenLumaPath, installedVersion))
+            {
+                Report("Converting AppList to new format...");
+                if (GreenLumaService.ConvertAppListFolderToIni(greenLumaPath, out var convertError))
+                {
+                    Logger.Info("AppList conversion successful");
+                    result.DeployedFiles.Add("AppList.ini (converted from AppList folder)");
+                }
+                else
+                {
+                    Logger.Warn($"AppList conversion failed: {convertError}");
+                    // Non-critical - don't fail the deployment
+                }
             }
 
             result.Success = true;
@@ -635,6 +662,57 @@ public static partial class GreenLumaDeploymentService
         catch (Exception ex)
         {
             Logger.Error(ex, $"Failed to copy {target}");
+        }
+    }
+
+    /// <summary>
+    /// Extracts the AppList template from the ZIP (NormalMode/AppList/AppList.ini) 
+    /// and saves it as AppList.template.ini for future AppList generation.
+    /// </summary>
+    private static void SaveAppListTemplateFromZip(
+        Dictionary<string, string> availableFiles,
+        string sourceDir,
+        string greenLumaPath)
+    {
+        try
+        {
+            // The template is in NormalMode/AppList/AppList.ini
+            const string templateRelativePath = "NormalMode/AppList/AppList.ini";
+            var templateSource = availableFiles.Keys
+                .FirstOrDefault(k => k.EndsWith("AppList.ini", StringComparison.OrdinalIgnoreCase) 
+                    && availableFiles[k].Contains("NormalMode", StringComparison.OrdinalIgnoreCase)
+                    && availableFiles[k].Contains("AppList", StringComparison.OrdinalIgnoreCase));
+
+            if (templateSource == null)
+            {
+                // Try direct lookup
+                var directPath = Path.Combine(sourceDir, templateRelativePath);
+                if (File.Exists(directPath))
+                {
+                    templateSource = Path.GetFileName(directPath);
+                }
+            }
+
+            if (templateSource != null && availableFiles.TryGetValue(templateSource, out var templatePath))
+            {
+                var templateContent = File.ReadAllText(templatePath);
+                
+                // Save as template file (keep original format with all commented entries)
+                var appListFolder = Path.Combine(greenLumaPath, "AppList");
+                Directory.CreateDirectory(appListFolder);
+                var templateDestPath = Path.Combine(appListFolder, "AppList.template.ini");
+                
+                File.WriteAllText(templateDestPath, templateContent);
+                Logger.Debug($" Saved AppList template to {templateDestPath}");
+            }
+            else
+            {
+                Logger.Debug(" AppList template not found in ZIP");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to save AppList template from ZIP");
         }
     }
 }

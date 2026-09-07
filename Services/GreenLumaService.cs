@@ -16,6 +16,63 @@ public partial class GreenLumaService
     [GeneratedRegex(@"[A-Za-z]:\\[^""\r\n]+?\.dll", RegexOptions.IgnoreCase)]
     private static partial Regex DllPathRegex();
 
+    /// <summary>
+    /// Fallback template (used if dynamic template unavailable).
+    /// </summary>
+    private static readonly int[] FallbackAppListTemplate =
+    [
+        90, 205, 219, 310, 410, 570, 575, 635, 640, 740, 1213, 1273, 1840, 2145, 2403, 4270, 4940,
+        8680, 8710, 8730, 8770, 13180, 17505, 17515, 17525, 17535, 17555, 17575, 17585, 18010, 18030,
+        22150, 34120, 41005, 41015, 41040, 41080, 42300, 42320, 42750, 43210, 55280, 63220, 70010,
+        72310, 72780, 91720, 96810, 111710, 203300, 203600, 208050, 212542, 215350, 215360, 216280,
+        216840, 220070, 221410, 222840, 223160, 223240, 223250, 223350, 223910, 224620, 229950,
+        230030, 231390, 233780, 236600, 236650, 237410, 238670, 238690, 255470, 258680, 261020,
+        261140, 261310, 265360, 266910, 294420, 302530, 302550, 312070, 313250, 315420, 316000,
+        319070, 320420, 321770, 322050, 323010, 332850, 366490, 373300, 374980, 381690, 382030,
+        401530, 405270, 407350, 443030, 476580, 551410, 568880, 613220, 733580, 807210, 858280,
+        875860, 944490, 961940, 1042420, 1054830, 1070560, 1070910, 1113280, 1161040, 1182480,
+        1245040, 1391110, 1420170, 1493710, 1580130, 1628350, 1635560, 1826330, 1874900, 1887720,
+        1977700, 2180100, 2230260, 2348590, 2676230, 2738040, 2805730, 3029110, 3043620, 3086180,
+        3127680, 3340990, 3658110, 4183110, 4185400, 4333400, 4427310, 4628710, 4628740, 4690330,
+        4862110
+    ];
+
+    /// <summary>
+    /// Gets the AppList template (Old AppIDs) from the deployed GreenLuma template file.
+    /// Falls back to hardcoded template if not found.
+    /// </summary>
+    public static int[] GetAppListTemplate(string greenLumaPath)
+    {
+        // Try to read template from deployed GreenLuma folder
+        var templatePath = Path.Combine(greenLumaPath, "AppList", "AppList.template.ini");
+        if (File.Exists(templatePath))
+        {
+            try
+            {
+                var lines = File.ReadAllLines(templatePath);
+                var template = new List<int>();
+                foreach (var line in lines)
+                {
+                    var trimmed = line.Trim();
+                    if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#") || trimmed.StartsWith("[") || trimmed.StartsWith(";"))
+                        continue;
+
+                    var parts = trimmed.Split('=', 2);
+                    if (parts.Length >= 1 && int.TryParse(parts[0].Trim(), out var oldAppId))
+                        template.Add(oldAppId);
+                }
+                if (template.Count > 0)
+                    return [.. template];
+            }
+            catch
+            {
+                // Fall through to fallback
+            }
+        }
+
+        return FallbackAppListTemplate;
+    }
+
     private static (string? Year, string? Arch, string? DllPath) FindInstalledDll(string path)
     {
         string? year = null;
@@ -495,9 +552,31 @@ public partial class GreenLumaService
             return false;
 
         var appListPath = Path.Combine(config.GreenLumaPath, "AppList");
+        var appListIniPath = Path.Combine(appListPath, "AppList.ini");
 
+        // Check both old format (AppList folder with .txt) and new format (AppList.ini)
+        var hasOldFormat = Directory.Exists(appListPath) &&
+                          Directory.GetFiles(appListPath, "*.txt").Length > 0;
+        var hasNewFormat = File.Exists(appListIniPath);
+
+        return hasOldFormat || hasNewFormat;
+    }
+
+    /// <summary>
+    /// Checks if a legacy AppList folder exists that needs conversion to AppList.ini format.
+    /// </summary>
+    public static bool HasLegacyAppList(Config config)
+    {
+        if (string.IsNullOrWhiteSpace(config.GreenLumaPath))
+            return false;
+
+        var appListPath = Path.Combine(config.GreenLumaPath, "AppList");
+        var appListIniPath = Path.Combine(appListPath, "AppList.ini");
+
+        // Legacy: AppList folder exists but AppList.ini doesn't
         return Directory.Exists(appListPath) &&
-               Directory.GetFiles(appListPath, "*.txt").Length > 0;
+               Directory.GetFiles(appListPath, "*.txt").Length > 0 &&
+               !File.Exists(appListIniPath);
     }
 
     public static async Task<int> GenerateAppListAsync(Profile? profile, Config? config)
@@ -510,6 +589,7 @@ public partial class GreenLumaService
             var appListPath = Path.Combine(config.GreenLumaPath, "AppList");
             Directory.CreateDirectory(appListPath);
 
+            // Clean up old .txt files if they exist (migration from old format)
             foreach (var file in Directory.GetFiles(appListPath, "*.txt"))
                 File.Delete(file);
 
@@ -525,11 +605,9 @@ public partial class GreenLumaService
 
             var limitedAppIds = allAppIds.Take(AppListLimit).ToList();
 
-            for (var i = 0; i < limitedAppIds.Count; i++)
-            {
-                var filePath = Path.Combine(appListPath, $"{i}.txt");
-                await File.WriteAllTextAsync(filePath, limitedAppIds[i]);
-            }
+            // Generate new AppList.ini format (GreenLuma 1.8.0+)
+            var appListIniPath = Path.Combine(appListPath, "AppList.ini");
+            await WriteAppListIniAsync(appListIniPath, limitedAppIds, config.GreenLumaPath);
 
             return totalCount;
         }
@@ -537,6 +615,186 @@ public partial class GreenLumaService
         {
             return -1;
         }
+    }
+
+    /// <summary>
+    /// Writes the AppList in the new INI format (GreenLuma 1.8.0+) using the template.
+    /// Preserves existing mappings and only fills in new slots.
+    /// </summary>
+    public static async Task WriteAppListIniAsync(string iniPath, List<string> appIds, string greenLumaPath)
+    {
+        var template = GetAppListTemplate(greenLumaPath);
+        
+        // Read existing mappings from file
+        var existingMappedAppIds = new List<string>(); // in original slot order
+        if (File.Exists(iniPath))
+        {
+            var existingLines = await File.ReadAllLinesAsync(iniPath);
+            for (var i = 0; i < existingLines.Length; i++)
+            {
+                var trimmed = existingLines[i].Trim();
+                if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#") || trimmed.StartsWith("[") || trimmed.StartsWith(";"))
+                    continue;
+
+                var parts = trimmed.Split('=', 2);
+                if (parts.Length >= 2)
+                {
+                    var leftSide = parts[0].Trim();
+                    var rightSide = parts[1].Trim();
+
+                    if (long.TryParse(leftSide, out var oldAppId))
+                    {
+                        var templateIndex = Array.IndexOf(template, (int)oldAppId);
+                        if (templateIndex >= 0 && !string.IsNullOrWhiteSpace(rightSide))
+                        {
+                            existingMappedAppIds.Add(rightSide);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build final list: existing games (still in profile) first, then new games
+        var profileAppIds = new HashSet<string>(appIds);
+        var finalAppIds = new List<string>();
+
+        // 1. Keep existing mapped games that are still in profile (compact up)
+        foreach (var mappedAppId in existingMappedAppIds)
+        {
+            if (profileAppIds.Contains(mappedAppId))
+            {
+                finalAppIds.Add(mappedAppId);
+            }
+        }
+
+        // 2. Add new games from profile (not already mapped)
+        foreach (var appId in appIds)
+        {
+            if (!existingMappedAppIds.Contains(appId))
+            {
+                finalAppIds.Add(appId);
+            }
+        }
+
+        // Write out: slot 0, 1, 2... with finalAppIds
+        var lines = new List<string>
+        {
+            "[AppList]",
+            "# Format:",
+            "# Old AppID = New AppID to unlock",
+            "# Remove the # before the old AppID",
+            ""
+        };
+
+        for (var i = 0; i < template.Length; i++)
+        {
+            if (i < finalAppIds.Count)
+            {
+                lines.Add($"{template[i]} = {finalAppIds[i]}");
+            }
+            else
+            {
+                lines.Add($"#{template[i]} = ");
+            }
+        }
+
+        await File.WriteAllLinesAsync(iniPath, lines);
+    }
+
+    /// <summary>
+    /// Converts the old AppList folder format (individual .txt files) to the new AppList.ini format.
+    /// Returns true if conversion was performed, false if no conversion was needed or failed.
+    /// </summary>
+    public static bool ConvertAppListFolderToIni(string greenLumaPath, out string? errorMessage)
+    {
+        errorMessage = null;
+
+        try
+        {
+            var appListFolder = Path.Combine(greenLumaPath, "AppList");
+            var appListIniPath = Path.Combine(appListFolder, "AppList.ini");
+
+            if (!Directory.Exists(appListFolder))
+            {
+                errorMessage = "AppList folder does not exist";
+                return false;
+            }
+
+            // Check if AppList.ini already exists and is valid
+            if (File.Exists(appListIniPath))
+            {
+                var existingContent = File.ReadAllText(appListIniPath);
+                if (existingContent.Contains("[AppList]"))
+                {
+                    // Already converted
+                    return false;
+                }
+            }
+
+            var txtFiles = Directory.GetFiles(appListFolder, "*.txt");
+            if (txtFiles.Length == 0)
+            {
+                errorMessage = "No .txt files found in AppList folder";
+                return false;
+            }
+
+            var appIds = new List<string>();
+            foreach (var file in txtFiles.OrderBy(f => f)) // Sort to maintain consistent order
+            {
+                var appId = File.ReadAllText(file).Trim();
+                if (!string.IsNullOrWhiteSpace(appId))
+                    appIds.Add(appId);
+            }
+
+            if (appIds.Count == 0)
+            {
+                errorMessage = "No valid AppIDs found in AppList folder";
+                return false;
+            }
+
+            // Limit to AppListLimit
+            var limitedAppIds = appIds.Take(AppListLimit).ToList();
+
+            // Write new AppList.ini
+            WriteAppListIniAsync(appListIniPath, limitedAppIds, greenLumaPath).Wait();
+
+            Logger.Info($"Converted AppList folder to AppList.ini with {limitedAppIds.Count} entries");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+            Logger.Error(ex, "Failed to convert AppList folder to AppList.ini");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Determines if AppList conversion is needed (updating from GreenLuma < 1.8.0 to 1.8.0+).
+    /// Checks if the installed version is below 1.8.0 and the old AppList folder exists.
+    /// </summary>
+    public static bool IsAppListConversionNeeded(string greenLumaPath, Version? installedVersion)
+    {
+        // If we can't detect version, assume conversion might be needed
+        if (installedVersion == null)
+        {
+            var appListFolder = Path.Combine(greenLumaPath, "AppList");
+            var appListIniPath = Path.Combine(greenLumaPath, "AppList.ini");
+            return Directory.Exists(appListFolder) && !File.Exists(appListIniPath);
+        }
+
+        // Version 1.8.0 = major 1, minor 8, build 0
+        var version180 = new Version(1, 8, 0);
+
+        // Conversion needed if installed version is below 1.8.0
+        if (installedVersion < version180)
+        {
+            var appListFolder = Path.Combine(greenLumaPath, "AppList");
+            var appListIniPath = Path.Combine(greenLumaPath, "AppList.ini");
+            return Directory.Exists(appListFolder) && !File.Exists(appListIniPath);
+        }
+
+        return false;
     }
 
     public static async Task<bool> LaunchGreenLumaAsync(Config config)

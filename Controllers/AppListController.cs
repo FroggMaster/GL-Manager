@@ -35,13 +35,27 @@ public class AppListController
         var greenLumaAppListPath = PathDetector.IsValidDirectory(config.GreenLumaPath)
             ? Path.Combine(config.GreenLumaPath!, "AppList")
             : null;
+        
+        var steamAppListIniPath = PathDetector.IsValidDirectory(config.SteamPath)
+            ? Path.Combine(config.SteamPath!, "AppList", "AppList.ini")
+            : null;
+        var greenLumaAppListIniPath = PathDetector.IsValidDirectory(config.GreenLumaPath)
+            ? Path.Combine(config.GreenLumaPath!, "AppList", "AppList.ini")
+            : null;
 
         var steamHasAppList = steamAppListPath != null && Directory.Exists(steamAppListPath) &&
                               Directory.GetFiles(steamAppListPath, "*.txt").Length > 0;
         var greenLumaHasAppList = greenLumaAppListPath != null && Directory.Exists(greenLumaAppListPath) &&
                                   Directory.GetFiles(greenLumaAppListPath, "*.txt").Length > 0;
+        
+        var steamHasAppListIni = steamAppListIniPath != null && File.Exists(steamAppListIniPath);
+        var greenLumaHasAppListIni = greenLumaAppListIniPath != null && File.Exists(greenLumaAppListIniPath);
 
-        if (!steamHasAppList && !greenLumaHasAppList)
+        // Check both old format (folder with .txt) and new format (AppList.ini)
+        var steamHasAny = steamHasAppList || steamHasAppListIni;
+        var greenLumaHasAny = greenLumaHasAppList || greenLumaHasAppListIni;
+
+        if (!steamHasAny && !greenLumaHasAny)
         {
             Logger.Info("No existing AppList found in Steam or GreenLuma folders");
             result.FoundAppList = false;
@@ -49,15 +63,64 @@ public class AppListController
         }
 
         result.FoundAppList = true;
-        result.FoundInSteamFolder = steamHasAppList;
+        result.FoundInSteamFolder = steamHasAny;
 
-        var appListToImport = steamHasAppList ? steamAppListPath! : greenLumaAppListPath!;
-        Logger.Info($"Importing AppList from '{appListToImport}'");
+        // Determine which source to import from (prefer Steam folder if it has either format)
+        var appIds = new HashSet<string>();
+        string importSource = "";
 
+        if (steamHasAny)
+        {
+            if (steamHasAppListIni)
+            {
+                importSource = steamAppListIniPath!;
+                Logger.Info($"Importing AppList from new format: '{importSource}'");
+                appIds = await ParseAppListIniAsync(importSource);
+            }
+            else if (steamHasAppList)
+            {
+                importSource = steamAppListPath!;
+                Logger.Info($"Importing AppList from old format: '{importSource}'");
+                appIds = await ParseAppListFolderAsync(importSource);
+            }
+        }
+        else if (greenLumaHasAny)
+        {
+            if (greenLumaHasAppListIni)
+            {
+                importSource = greenLumaAppListIniPath!;
+                Logger.Info($"Importing AppList from new format: '{importSource}'");
+                appIds = await ParseAppListIniAsync(importSource);
+            }
+            else if (greenLumaHasAppList)
+            {
+                importSource = greenLumaAppListPath!;
+                Logger.Info($"Importing AppList from old format: '{importSource}'");
+                appIds = await ParseAppListFolderAsync(importSource);
+            }
+        }
+
+        if (appIds.Count == 0)
+        {
+            Logger.Info("AppList contained no valid app IDs");
+            return result;
+        }
+
+        result.AppIds = [.. appIds];
+        result.HasSteamWarning = steamHasAny;
+        Logger.Info($"Import result: {appIds.Count} app IDs found (SteamFolder={steamHasAny})");
+        return result;
+    }
+
+    /// <summary>
+    /// Parses the old AppList folder format (individual .txt files).
+    /// </summary>
+    private async Task<HashSet<string>> ParseAppListFolderAsync(string folderPath)
+    {
         var appIds = new HashSet<string>();
         try
         {
-            var files = Directory.GetFiles(appListToImport, "*.txt");
+            var files = Directory.GetFiles(folderPath, "*.txt");
             foreach (var file in files)
             {
                 var appId = (await File.ReadAllTextAsync(file)).Trim();
@@ -69,20 +132,70 @@ public class AppListController
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, $"Failed to read AppList from '{appListToImport}'");
-            return result;
+            Logger.Error(ex, $"Failed to read AppList folder from '{folderPath}'");
         }
+        return appIds;
+    }
 
-        if (appIds.Count == 0)
+    /// <summary>
+    /// Parses the new AppList.ini format (GreenLuma 1.8.0+).
+    /// Format:
+    /// [AppList]
+    /// # Format:
+    /// # Old AppID = New AppID to unlock
+    /// # Remove the # before the old AppID
+    /// 
+    /// #90 = 
+    /// 205 = 440
+    /// #219 = 
+    /// ...
+    /// We extract the NEW AppIDs (right side) from uncommented lines.
+    /// </summary>
+    private async Task<HashSet<string>> ParseAppListIniAsync(string iniPath)
+    {
+        var appIds = new HashSet<string>();
+        try
         {
-            Logger.Info("AppList contained no valid app IDs");
-            return result;
-        }
+            var lines = await File.ReadAllLinesAsync(iniPath);
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                
+                // Skip empty lines, comments (starting with #), and section headers
+                if (string.IsNullOrWhiteSpace(trimmed) || 
+                    trimmed.StartsWith("[") ||
+                    trimmed.StartsWith(";"))
+                    continue;
 
-        result.AppIds = [..appIds];
-        result.HasSteamWarning = steamHasAppList;
-        Logger.Info($"Import result: {appIds.Count} app IDs found (SteamFolder={steamHasAppList})");
-        return result;
+                // Parse format: OldAppID = NewAppID
+                // We want the NEW AppID (right side) from uncommented lines
+                var parts = trimmed.Split('=', 2);
+                if (parts.Length >= 2)
+                {
+                    var leftSide = parts[0].Trim();
+                    var rightSide = parts[1].Trim();
+
+                    // Skip commented lines (starts with #)
+                    if (leftSide.StartsWith("#"))
+                        continue;
+
+                    // Extract the NEW AppID from the right side
+                    if (!string.IsNullOrWhiteSpace(rightSide) && 
+                        long.TryParse(rightSide, out _) && // Validate it's a number
+                        rightSide != "0")
+                    {
+                        appIds.Add(rightSide);
+                    }
+                }
+            }
+
+            Logger.Info($"Parsed {appIds.Count} app IDs from AppList.ini");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"Failed to parse AppList.ini from '{iniPath}'");
+        }
+        return appIds;
     }
 
     public async Task ResolveAndImportAppsAsync(List<string> appIds, Profile profile, IProgress<AppListProgressReport>? progress = null)

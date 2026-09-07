@@ -150,7 +150,7 @@ public class GameListController
     public void LoadGames(IEnumerable<Game> games)
     {
         Games.Clear();
-        foreach (var game in games.OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase))
+        foreach (var game in games)
             Games.Add(game);
 
         // Clear search filter when loading a new set of games
@@ -301,7 +301,7 @@ public class GameListController
         Logger.Info($"ImportAppIdsAsync: {resolvedCount} resolved, {skippedCount} skipped (of {appIdsList.Count} total)");
 
         var addedCount = 0;
-        foreach (var game in importedGames.OrderBy(g => int.Parse(g.AppId)))
+        foreach (var game in importedGames)
         {
             if (!Games.Any(g => g.AppId == game.AppId))
             {
