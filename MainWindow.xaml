@@ -2422,7 +2422,7 @@
             x:Name="Toast"
             Grid.Row="0"
             Grid.RowSpan="3"
-            MaxWidth="400"
+            MaxWidth="760"
             Margin="0,0,0,60"
             Padding="20,16"
             HorizontalAlignment="Center"
@@ -2442,9 +2442,14 @@
                     ShadowDepth="4"
                     Color="Black" />
             </Border.Effect>
-            <StackPanel Orientation="Horizontal">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
                 <Path
                     x:Name="ToastIcon"
+                    Grid.Column="0"
                     Width="24"
                     Height="24"
                     Margin="0,0,12,0"
@@ -2453,12 +2458,13 @@
                     Stretch="Uniform" />
                 <TextBlock
                     x:Name="ToastMessage"
+                    Grid.Column="1"
                     VerticalAlignment="Center"
                     FontSize="14"
                     Foreground="{StaticResource Text}"
                     Text="Operation completed successfully"
                     TextWrapping="Wrap" />
-            </StackPanel>
+            </Grid>
         </Border>
 
         <!-- Hidden WebView2 host for GreenLuma version check (must be in visual tree) -->
