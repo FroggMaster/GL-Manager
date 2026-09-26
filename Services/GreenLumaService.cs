@@ -1029,7 +1029,7 @@ public partial class GreenLumaService
         if (useSeparatePaths)
         {
             settings["UseFullPathsFromIni"] = " 1";
-            settings["Exe"] = $" \"{steamExePath}\"";
+            settings["Exe"] = $" {steamExePath}";
 
             if (!string.IsNullOrWhiteSpace(dllValue))
             {
@@ -1058,7 +1058,7 @@ public partial class GreenLumaService
                         // ignored
                     }
 
-                    settings["Dll"] = $" \"{full}\"";
+                    settings["Dll"] = $" {full}";
                 }
                 else
                 {
@@ -1072,7 +1072,7 @@ public partial class GreenLumaService
                         // ignored
                     }
 
-                    settings["Dll"] = $" \"{fullDllPath}\"";
+                    settings["Dll"] = $" {fullDllPath}";
                 }
             }
         }
