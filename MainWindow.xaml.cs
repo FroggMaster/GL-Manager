@@ -1218,7 +1218,7 @@ public partial class MainWindow
     private void MinimizeButton_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void MaximizeButton_Click(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
-    private void GitHubButton_Click(object sender, RoutedEventArgs e) => LaunchBrowser("https://github.com/FroggMaster/GreenLuma-Manager");
+    private void GitHubButton_Click(object sender, RoutedEventArgs e) => LaunchBrowser("https://github.com/FroggMaster/GL-Manager");
     private static void LaunchBrowser(string url) => Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
 
     // ─── Plugins ──────────────────────────────────────────────────────
