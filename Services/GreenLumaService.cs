@@ -801,20 +801,37 @@ public partial class GreenLumaService
     {
         return await Task.Run(() =>
         {
+            var method = DetectInstallMethod(config.SteamPath, config.GreenLumaPath, config.PreferredMode);
+            LaunchDiagnostics.BeginRun(config, method, "CLI / autostart (--launch-greenluma)");
+
             try
             {
                 Logger.Info("CLI launch started");
 
                 if (!ValidatePaths(config))
+                {
+                    LaunchDiagnostics.EndRun(false, "path validation failed");
                     return false;
+                }
 
                 KillSteam(config);
 
-                return LaunchInjector(config);
+                var result = LaunchInjector(config);
+                if (result)
+                {
+                    LaunchDiagnostics.Step("Watching Steam lifecycle...");
+                    result = LaunchDiagnostics.WatchSteam(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10));
+                }
+
+                LaunchDiagnostics.EndRun(result, result
+                    ? "DLLInjector started and Steam stayed alive"
+                    : "DLLInjector failed or Steam did not stay alive");
+                return result;
             }
             catch (Exception ex)
             {
                 Logger.Error(ex, "Unhandled exception in CLI launch");
+                LaunchDiagnostics.EndRun(false, $"unhandled exception: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
         });
@@ -850,6 +867,7 @@ public partial class GreenLumaService
         if (!File.Exists(injectorPath))
         {
             Logger.Error($"CLI launch: DLLInjector.exe not found at '{injectorPath}'");
+            LaunchDiagnostics.Line($"DLLInjector.exe not found at '{injectorPath}'");
             return false;
         }
 
@@ -857,14 +875,93 @@ public partial class GreenLumaService
         UpdateInjectorIni(config);
 
         Logger.Info($"CLI launch: starting DLLInjector.exe from '{config.GreenLumaPath}'");
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = injectorPath,
-            WorkingDirectory = config.GreenLumaPath,
-            UseShellExecute = true
-        });
+        return StartInjector(injectorPath, config.GreenLumaPath);
+    }
 
-        return true;
+    /// <summary>
+    /// Starts DLLInjector while capturing its PID, stdout/stderr and exit code
+    /// for diagnostics. The manager always runs elevated (requireAdministrator
+    /// manifest), so the injector can be launched without shell-execute and
+    /// still inherit an elevated token. Falls back to a plain shell-execute
+    /// launch if the redirected start fails for any reason.
+    /// </summary>
+    internal static bool StartInjector(string injectorPath, string workingDirectory)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = injectorPath,
+                WorkingDirectory = workingDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            var startedAt = DateTime.UtcNow;
+            var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null) LaunchDiagnostics.Line($"[injector stdout] {e.Data}");
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data != null) LaunchDiagnostics.Line($"[injector stderr] {e.Data}");
+            };
+            process.Exited += (_, _) =>
+            {
+                try
+                {
+                    LaunchDiagnostics.Line(
+                        $"DLLInjector exited after {(DateTime.UtcNow - startedAt).TotalSeconds:F1}s (exitCode={process.ExitCode})");
+                }
+                catch
+                {
+                    LaunchDiagnostics.Line("DLLInjector exited (exit code unavailable)");
+                }
+                finally
+                {
+                    try { process.Dispose(); } catch { /* ignored */ }
+                }
+            };
+
+            if (!process.Start())
+            {
+                LaunchDiagnostics.Line("DLLInjector failed to start (Process.Start returned false)");
+                process.Dispose();
+                return false;
+            }
+
+            LaunchDiagnostics.Line($"DLLInjector started: PID={process.Id} path='{injectorPath}' workdir='{workingDirectory}'");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to start DLLInjector with output capture");
+            LaunchDiagnostics.Line($"!! DLLInjector redirected start FAILED: {ex.GetType().Name}: {ex.Message} — falling back");
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = injectorPath,
+                    WorkingDirectory = workingDirectory,
+                    UseShellExecute = true
+                });
+                LaunchDiagnostics.Line("DLLInjector launched via shell-execute fallback (no output/exit capture)");
+                return true;
+            }
+            catch (Exception fallbackEx)
+            {
+                Logger.Error(fallbackEx, "Fallback DLLInjector launch failed");
+                LaunchDiagnostics.Line($"!! DLLInjector shell-execute fallback FAILED: {fallbackEx.GetType().Name}: {fallbackEx.Message}");
+                return false;
+            }
+        }
     }
 
     internal static void KillSteam(Config config)
@@ -872,6 +969,7 @@ public partial class GreenLumaService
         try
         {
             var steamExePath = Path.Combine(config.SteamPath, "Steam.exe");
+            LaunchDiagnostics.SnapshotProcesses("before KillSteam", [.. SteamProcessNames, "DLLInjector"]);
 
             if (File.Exists(steamExePath))
                 try
@@ -892,10 +990,34 @@ public partial class GreenLumaService
                 }
 
             foreach (var processName in SteamProcessNames) KillProcessesByName(processName);
+
+            Thread.Sleep(500);
+            VerifyNoSteamRemaining();
+            LaunchDiagnostics.SnapshotProcesses("after KillSteam", [.. SteamProcessNames, "DLLInjector"]);
         }
         catch (Exception ex)
         {
             Logger.Warn($"KillSteam encountered an error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Warns if any Steam process survived the kill pass, so that a still-running
+    /// instance can be correlated with a later injection failure.
+    /// </summary>
+    private static void VerifyNoSteamRemaining()
+    {
+        foreach (var processName in SteamProcessNames)
+        {
+            var remaining = Process.GetProcessesByName(processName);
+            if (remaining.Length > 0)
+            {
+                var pids = string.Join(", ", remaining.Select(p => p.Id));
+                Logger.Warn($"{processName} still running after KillSteam: PID(s) {pids}");
+                LaunchDiagnostics.Line($"!! {processName} STILL RUNNING after KillSteam: PID(s) {pids}");
+            }
+
+            foreach (var process in remaining) process.Dispose();
         }
     }
 
@@ -945,6 +1067,7 @@ public partial class GreenLumaService
             if (!File.Exists(iniPath))
             {
                 Logger.Debug($"DLLInjector.ini not found at '{iniPath}', skipping update");
+                LaunchDiagnostics.Line($"DLLInjector.ini not found at '{iniPath}' — skipping update");
                 return;
             }
 
@@ -955,10 +1078,18 @@ public partial class GreenLumaService
 
             File.WriteAllLines(iniPath, updatedLines);
             Logger.Debug($"Updated DLLInjector.ini at '{iniPath}' with {settings.Count} setting(s)");
+
+            LaunchDiagnostics.Block($"DLLInjector.ini BEFORE ({iniPath})",
+                string.Join(Environment.NewLine, lines));
+            LaunchDiagnostics.Block("DLLInjector.ini settings applied",
+                string.Join(Environment.NewLine, settings.Select(kv => $"{kv.Key}={kv.Value}")));
+            LaunchDiagnostics.Block("DLLInjector.ini AFTER",
+                string.Join(Environment.NewLine, updatedLines));
         }
         catch (Exception ex)
         {
             Logger.Warn($"Failed to update DLLInjector.ini: {ex.Message}");
+            LaunchDiagnostics.Line($"!! Failed to update DLLInjector.ini: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

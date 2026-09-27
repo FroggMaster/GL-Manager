@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Threading;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
 
@@ -63,22 +62,26 @@ public class GreenLumaLauncher
     {
         return await Task.Run(() =>
         {
+            var method = GreenLumaService.DetectInstallMethod(
+                config.SteamPath, config.GreenLumaPath, config.PreferredMode);
+
+            LaunchDiagnostics.BeginRun(config, method, "GUI (MainWindow)");
+
             try
             {
-                var method = GreenLumaService.DetectInstallMethod(
-                    config.SteamPath, config.GreenLumaPath, config.PreferredMode);
-
                 Logger.Info($"Launch started — detected method: {method}");
 
                 if (method == GreenLumaInstallMethod.None)
                 {
                     Logger.Error("No GreenLuma installation detected, aborting launch");
+                    LaunchDiagnostics.EndRun(false, "no GreenLuma installation detected");
                     return false;
                 }
 
                 if (!ValidatePaths(config))
                 {
                     Logger.Error("Path validation failed, aborting launch");
+                    LaunchDiagnostics.EndRun(false, "path validation failed");
                     return false;
                 }
 
@@ -98,16 +101,19 @@ public class GreenLumaLauncher
 
                 if (result)
                 {
-                    Logger.Info($"Launch succeeded — method: {method}, waiting for Steam to start...");
-                    var steamConfirmed = WaitForSteam(TimeSpan.FromSeconds(30));
-                    if (steamConfirmed)
+                    Logger.Info($"Launch initiated — method: {method}, watching Steam lifecycle...");
+                    LaunchDiagnostics.Step("Watching Steam lifecycle...");
+                    result = LaunchDiagnostics.WatchSteam(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10));
+
+                    if (result)
                     {
-                        Logger.Info("Steam process confirmed running");
+                        Logger.Info("Steam process confirmed running and stable");
+                        LaunchDiagnostics.Line("Steam confirmed running and stable");
                     }
                     else
                     {
-                        Logger.Error("Steam did not start within 30 seconds");
-                        return false;
+                        Logger.Error("Steam did not start, or exited prematurely");
+                        LaunchDiagnostics.Line("Steam did not start, or exited prematurely");
                     }
                 }
                 else
@@ -115,11 +121,15 @@ public class GreenLumaLauncher
                     Logger.Error($"Launch failed — method: {method}");
                 }
 
+                LaunchDiagnostics.EndRun(result, result
+                    ? "Steam launched and stayed alive"
+                    : "launch failed or Steam did not stay alive");
                 return result;
             }
             catch (Exception ex)
             {
                 Logger.Error(ex, "Unhandled exception during launch");
+                LaunchDiagnostics.EndRun(false, $"unhandled exception: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
         });
@@ -131,21 +141,17 @@ public class GreenLumaLauncher
         if (!File.Exists(injectorPath))
         {
             Logger.Error($"DLLInjector.exe not found at '{injectorPath}'");
+            LaunchDiagnostics.Line($"DLLInjector.exe not found at '{injectorPath}'");
             return false;
         }
 
         Logger.Info($"Updating DLLInjector.ini in '{injectorDir}'");
+        LaunchDiagnostics.Step($"Updating DLLInjector.ini in '{injectorDir}'");
         GreenLumaService.UpdateInjectorIni(config, injectorDir);
 
         Logger.Info($"Launching DLLInjector.exe from '{injectorDir}'");
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = injectorPath,
-            WorkingDirectory = injectorDir,
-            UseShellExecute = true
-        });
-
-        return true;
+        LaunchDiagnostics.Step($"Launching DLLInjector.exe from '{injectorDir}'");
+        return GreenLumaService.StartInjector(injectorPath, injectorDir);
     }
 
     private static bool RunSteamDirectly(string? steamPath)
@@ -172,27 +178,5 @@ public class GreenLumaLauncher
         });
 
         return true;
-    }
-
-    /// <summary>
-    /// Waits for steam.exe to appear in the process list, which coincides with
-    /// Steam's update/bootstrap window being displayed.
-    /// Returns false if the process doesn't appear within the timeout.
-    /// </summary>
-    private static bool WaitForSteam(TimeSpan timeout)
-    {
-        var stopwatch = Stopwatch.StartNew();
-
-        while (stopwatch.Elapsed < timeout)
-        {
-            if (Process.GetProcessesByName("steam").Length > 0)
-            {
-                Logger.Debug($"steam.exe appeared after {stopwatch.Elapsed.TotalSeconds:F1}s");
-                return true;
-            }
-            Thread.Sleep(500);
-        }
-
-        return false;
     }
 }
