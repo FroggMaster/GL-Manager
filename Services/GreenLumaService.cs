@@ -1246,6 +1246,7 @@ public partial class GreenLumaService
     private static List<string> ApplySettings(List<string> originalLines, Dictionary<string, string> settings)
     {
         var result = new List<string>();
+        var applied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var line in originalLines)
         {
@@ -1262,12 +1263,19 @@ public partial class GreenLumaService
                     {
                         result.Add($"{setting.Key}={setting.Value}");
                         matched = true;
+                        applied.Add(setting.Key);
                         break;
                     }
             }
 
             if (!matched) result.Add(line);
         }
+
+        // Settings the manager wants to control but that are absent from the file
+        // must still be written; otherwise the requested value is silently a no-op.
+        foreach (var setting in settings)
+            if (!applied.Contains(setting.Key))
+                result.Add($"{setting.Key}={setting.Value}");
 
         return result;
     }
