@@ -9,6 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <Version>1.0.1</Version>
     <Copyright>Copyright © FroggMaster 2026</Copyright>
     <PackageIcon>icon.ico</PackageIcon>
