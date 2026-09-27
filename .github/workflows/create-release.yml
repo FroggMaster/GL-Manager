@@ -57,7 +57,7 @@ jobs:
             $changelog += ""
 
             # Get full commit log with author names
-            $log = git log "$previous..HEAD" --format="* %s by %an (%h)"
+            $log = git log "$previous..HEAD" --format="* %s (%h)"
             if ($log) {
               $changelog += $log
             } else {
@@ -67,7 +67,7 @@ jobs:
             $changelog += "## What's Changed"
             $changelog += ""
 
-            $log = git log --format="* %s by %an (%h)"
+            $log = git log --format="* %s (%h)"
             if ($log) {
               $changelog += $log
             } else {
