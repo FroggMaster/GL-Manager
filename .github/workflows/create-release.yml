@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version number (example: 1.0.0.0)"
+        description: "Version number (example: 1.0.0)"
         required: true
         type: string
       title:
@@ -90,17 +90,53 @@ jobs:
           Write-Host "Changelog generated:"
           Write-Host $body
 
-      - name: Create and push tag
+      - name: Update version in project file
+        id: bump
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $projectPath = "GreenLuma-Manager.csproj"
+          $content = Get-Content -LiteralPath $projectPath -Raw
+
+          if ($content -notmatch '<Version>') {
+            Write-Error "No <Version> element found in $projectPath"
+            exit 1
+          }
+
+          $updated = [regex]::Replace($content, '<Version>.*?</Version>', "<Version>$version</Version>")
+
+          if ($updated -eq $content) {
+            Write-Host "Project version is already $version; no change needed."
+            "changed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            Set-Content -LiteralPath $projectPath -Value $updated -NoNewline -Encoding utf8
+            Write-Host "Updated <Version> in $projectPath to $version"
+            "changed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Commit version bump
+        if: steps.bump.outputs.changed == 'true'
         shell: pwsh
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          $tag = "v${{ inputs.version }}"
-          Write-Host "Creating tag $tag"
+          git add GreenLuma-Manager.csproj
+          git commit -m "Set version to v${{ inputs.version }}"
+          git push origin "HEAD:${{ github.ref_name }}"
 
-          git tag $tag
-          git push origin $tag
+      - name: Create and push tag
+        shell: pwsh
+        run: |
+          $tag = "v${{ inputs.version }}"
+
+          if (git tag --list $tag) {
+            Write-Host "Tag $tag already exists; leaving it in place."
+          } else {
+            Write-Host "Creating tag $tag"
+            git tag $tag
+            git push origin $tag
+          }
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
