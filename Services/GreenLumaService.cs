@@ -820,12 +820,13 @@ public partial class GreenLumaService
                 if (result)
                 {
                     LaunchDiagnostics.Step("Watching Steam lifecycle...");
-                    result = LaunchDiagnostics.WatchSteam(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10));
+                    result = LaunchDiagnostics.WatchSteam(
+                        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(12), config.SteamPath, config.GreenLumaPath);
                 }
 
                 LaunchDiagnostics.EndRun(result, result
-                    ? "DLLInjector started and Steam stayed alive"
-                    : "DLLInjector failed or Steam did not stay alive");
+                    ? "DLLInjector started and Steam was running at end of watch"
+                    : "DLLInjector failed, or Steam was not running at end of watch");
                 return result;
             }
             catch (Exception ex)

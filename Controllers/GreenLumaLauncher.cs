@@ -103,17 +103,18 @@ public class GreenLumaLauncher
                 {
                     Logger.Info($"Launch initiated — method: {method}, watching Steam lifecycle...");
                     LaunchDiagnostics.Step("Watching Steam lifecycle...");
-                    result = LaunchDiagnostics.WatchSteam(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10));
+                    result = LaunchDiagnostics.WatchSteam(
+                        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(12), config.SteamPath, config.GreenLumaPath);
 
                     if (result)
                     {
-                        Logger.Info("Steam process confirmed running and stable");
-                        LaunchDiagnostics.Line("Steam confirmed running and stable");
+                        Logger.Info("Steam process confirmed running at end of watch");
+                        LaunchDiagnostics.Line("Steam confirmed running at end of watch");
                     }
                     else
                     {
-                        Logger.Error("Steam did not start, or exited prematurely");
-                        LaunchDiagnostics.Line("Steam did not start, or exited prematurely");
+                        Logger.Error("Steam did not appear, or was not running at the end of the watch");
+                        LaunchDiagnostics.Line("Steam did not appear, or was not running at the end of the watch");
                     }
                 }
                 else

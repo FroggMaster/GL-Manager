@@ -40,6 +40,9 @@ internal static class LaunchDiagnostics
     public static readonly string[] SteamProcessNames =
         ["steam", "steamwebhelper", "steamerrorfilereporter"];
 
+    /// <summary>Marker files GreenLuma's DLLInjector creates (CreateFiles / FileToCreate_N).</summary>
+    private static readonly string[] MarkerFiles = ["NoQuestion.bin", "StealthMode.bin"];
+
     // ── Run framing ───────────────────────────────────────────────────────────
 
     /// <summary>Starts a new, clearly delimited run block with a context dump.</summary>
@@ -126,102 +129,231 @@ internal static class LaunchDiagnostics
     // ── Steam lifecycle watch ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Waits for <c>steam.exe</c> to appear, then verifies it survives a short
-    /// stability window. Every transition is logged: appearance, helper
-    /// processes, premature exit (with exit code and lifetime), and relaunch.
+    /// Waits for <c>steam.exe</c> to appear, then verifies Steam is still running
+    /// at the end of a stability window. Steam's bootstrap process hands off to a
+    /// successor and exits normally, so tracking is keyed on the process NAME, not
+    /// on a single PID: every instance seen is logged (appearance details plus a
+    /// reliably-read exit code) and success means "some steam.exe is alive at the
+    /// end". A still-quiet moment between bootstrap instances is tolerated via a
+    /// short settle window instead of being reported as a crash. When a GreenLuma
+    /// module is loaded into the surviving instance it is reported, and the
+    /// injector's marker files are checked.
     /// </summary>
-    /// <returns><c>true</c> if Steam appeared and was still alive at the end of the stability window.</returns>
-    public static bool WatchSteam(TimeSpan appearTimeout, TimeSpan stabilityWindow)
+    /// <returns><c>true</c> if a steam.exe was still running at the end of the watch.</returns>
+    public static bool WatchSteam(TimeSpan appearTimeout, TimeSpan stabilityWindow,
+        string? steamPath = null, string? greenLumaPath = null)
     {
-        var waited = Stopwatch.StartNew();
-        Process? main = null;
-        var appearedAt = DateTime.UtcNow;
+        Section("Steam lifecycle watch");
+        var started = Stopwatch.StartNew();
+        var tracked = new Dictionary<int, TrackedSteam>();
+        var sawSteam = false;
 
-        // Phase 1 — wait for steam.exe to appear.
-        var deadline = DateTime.UtcNow + appearTimeout;
-        while (DateTime.UtcNow < deadline)
+        // Phase 1 — wait for the first steam.exe.
+        var appearDeadline = DateTime.UtcNow + appearTimeout;
+        while (DateTime.UtcNow < appearDeadline)
         {
-            var candidates = SafeGetProcesses("steam");
-            if (candidates.Length > 0)
+            SampleSteam(tracked, out var anyAlive);
+            if (anyAlive)
             {
-                main = candidates[0];
-                for (var i = 1; i < candidates.Length; i++) candidates[i].Dispose();
-                appearedAt = DateTime.UtcNow;
-                Line($"steam.exe appeared after {waited.Elapsed.TotalSeconds:F2}s: {DescribeProcess(main)}");
+                sawSteam = true;
+                Line($"steam.exe appeared after {started.Elapsed.TotalSeconds:F2}s");
                 break;
             }
 
             Thread.Sleep(200);
         }
 
-        if (main == null)
+        if (!sawSteam)
         {
             Line($"steam.exe did NOT appear within {appearTimeout.TotalSeconds:F0}s");
+            LogInjectorArtifacts(steamPath, greenLumaPath);
+            ReleaseHandles(tracked);
             return false;
         }
 
-        // Phase 2 — stability window: did it survive?
-        var seenHelpers = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "steam" };
+        // Phase 2 — stability window. Tolerates the bootstrap hand-off between PIDs.
         var stableUntil = DateTime.UtcNow + stabilityWindow;
-        var alive = true;
-
         while (DateTime.UtcNow < stableUntil)
         {
-            ReportNewHelpers(seenHelpers);
-
-            var exited = false;
-            try { exited = main.HasExited; }
-            catch { /* process may be inaccessible; treat as alive */ }
-
-            if (exited)
-            {
-                Line($"!! steam.exe PID={SafePid(main)} EXITED after " +
-                     $"{(DateTime.UtcNow - appearedAt).TotalSeconds:F2}s (exitCode={SafeExitCode(main)})");
-
-                var relaunched = SafeGetProcesses("steam");
-                if (relaunched.Length > 0)
-                {
-                    main.Dispose();
-                    main = relaunched[0];
-                    for (var i = 1; i < relaunched.Length; i++) relaunched[i].Dispose();
-                    appearedAt = DateTime.UtcNow;
-                    Line($"steam.exe re-appeared: {DescribeProcess(main)}");
-                }
-                else
-                {
-                    alive = false;
-                    break;
-                }
-            }
-
+            SampleSteam(tracked, out _);
             Thread.Sleep(200);
         }
 
-        if (alive)
-            Line($"steam.exe PID={SafePid(main)} still alive after {stabilityWindow.TotalSeconds:F0}s stability window");
+        var alive = tracked.Values.Where(t => !t.ExitLogged).ToList();
 
-        main.Dispose();
-        return alive;
-    }
-
-    private static void ReportNewHelpers(HashSet<string> seen)
-    {
-        foreach (var name in SteamProcessNames)
+        // Phase 3 — if nothing is alive right now, give Steam a short settle window
+        // to bring up a successor before declaring failure (avoids false negatives).
+        if (alive.Count == 0)
         {
-            if (seen.Contains(name))
-                continue;
-
-            var processes = SafeGetProcesses(name);
-            if (processes.Length == 0)
-                continue;
-
-            seen.Add(name);
-            foreach (var process in processes)
+            Line("no steam.exe alive at end of stability window — waiting up to 5s for a successor");
+            var settleUntil = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (DateTime.UtcNow < settleUntil)
             {
-                Line($"{name} appeared: {DescribeProcess(process)}");
-                process.Dispose();
+                SampleSteam(tracked, out var anyAlive);
+                if (anyAlive)
+                {
+                    alive = tracked.Values.Where(t => !t.ExitLogged).ToList();
+                    break;
+                }
+
+                Thread.Sleep(200);
             }
         }
+
+        var running = alive.Count > 0;
+        Line(running
+            ? $"steam.exe RUNNING at end: PID(s) {string.Join(", ", alive.Select(a => a.Pid))} (instances seen: {tracked.Count})"
+            : $"steam.exe NOT running at end (instances seen: {tracked.Count})");
+
+        if (running)
+            CheckGreenLumaModule(alive.Select(a => a.Pid).ToList());
+
+        LogInjectorArtifacts(steamPath, greenLumaPath);
+        ReleaseHandles(tracked);
+        return running;
+    }
+
+    private sealed class TrackedSteam
+    {
+        public int Pid;
+        public IntPtr Handle;
+        public DateTime FirstSeenUtc;
+        public bool ExitLogged;
+    }
+
+    /// <summary>
+    /// Samples the current steam.exe set: logs new instances, and detects exits
+    /// using a held process handle so the exit code can be read reliably
+    /// (Process.ExitCode throws once the Process object is disposed).
+    /// </summary>
+    private static void SampleSteam(Dictionary<int, TrackedSteam> tracked, out bool anyAlive)
+    {
+        var processes = SafeGetProcesses("steam");
+        var current = new HashSet<int>();
+
+        foreach (var process in processes)
+        {
+            int pid;
+            try { pid = process.Id; }
+            catch { continue; }
+
+            current.Add(pid);
+
+            if (!tracked.ContainsKey(pid))
+            {
+                var handle = OpenProcess(ProcessQueryLimitedInformation | Synchronize, false, pid);
+                tracked[pid] = new TrackedSteam { Pid = pid, Handle = handle, FirstSeenUtc = DateTime.UtcNow };
+                Line($"steam.exe appeared: {DescribeProcess(process)}");
+            }
+        }
+
+        foreach (var process in processes) process.Dispose();
+
+        anyAlive = false;
+        foreach (var item in tracked.Values)
+        {
+            if (item.ExitLogged)
+                continue;
+
+            if (item.Handle != IntPtr.Zero)
+            {
+                if (WaitForSingleObject(item.Handle, 0) == 0)
+                {
+                    Line($"steam.exe PID={item.Pid} EXITED after " +
+                         $"{(DateTime.UtcNow - item.FirstSeenUtc).TotalSeconds:F2}s (exitCode={ExitCodeOf(item.Handle)})");
+                    item.ExitLogged = true;
+                    CloseHandle(item.Handle);
+                    item.Handle = IntPtr.Zero;
+                }
+                else
+                {
+                    anyAlive = true;
+                }
+            }
+            else if (current.Contains(item.Pid))
+            {
+                anyAlive = true;
+            }
+            else
+            {
+                Line($"steam.exe PID={item.Pid} gone (no handle; exit code unavailable)");
+                item.ExitLogged = true;
+            }
+        }
+    }
+
+    private static void CheckGreenLumaModule(List<int> pids)
+    {
+        foreach (var pid in pids)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                var modules = process.Modules;
+
+                ProcessModule? hit = null;
+                foreach (ProcessModule module in modules)
+                {
+                    if (module.ModuleName.Contains("GreenLuma", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hit = module;
+                        break;
+                    }
+                }
+
+                Line(hit != null
+                    ? $"GreenLuma module LOADED in steam.exe PID={pid}: {hit.ModuleName} ({hit.FileName})"
+                    : $"GreenLuma module NOT found in steam.exe PID={pid} ({modules.Count} modules enumerated) — stealth mode may rename/unload it");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Line($"module enumeration for steam.exe PID={pid} failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    private static void LogInjectorArtifacts(string? steamPath, string? greenLumaPath)
+    {
+        Line("--- injector marker files ---");
+        foreach (var dir in new[] { greenLumaPath, steamPath })
+        {
+            if (string.IsNullOrWhiteSpace(dir))
+                continue;
+
+            foreach (var name in MarkerFiles)
+            {
+                var path = Path.Combine(dir, name);
+                Line($"  {path}: {FileExistsSafe(path)}");
+            }
+        }
+    }
+
+    private static void ReleaseHandles(Dictionary<int, TrackedSteam> tracked)
+    {
+        foreach (var item in tracked.Values)
+        {
+            if (item.Handle == IntPtr.Zero)
+                continue;
+
+            CloseHandle(item.Handle);
+            item.Handle = IntPtr.Zero;
+        }
+    }
+
+    private static string ExitCodeOf(IntPtr handle)
+    {
+        try
+        {
+            if (GetExitCodeProcess(handle, out var code))
+                return code == StillActive ? "still-active" : code.ToString();
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return "unknown";
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -285,12 +417,6 @@ internal static class LaunchDiagnostics
         catch { return -1; }
     }
 
-    private static string SafeExitCode(Process process)
-    {
-        try { return process.ExitCode.ToString(); }
-        catch { return "unknown"; }
-    }
-
     private static bool FileExistsSafe(string path)
     {
         try { return File.Exists(path); }
@@ -325,11 +451,19 @@ internal static class LaunchDiagnostics
     // ── Process token elevation (P/Invoke) ────────────────────────────────────
 
     private const int ProcessQueryLimitedInformation = 0x1000;
+    private const int Synchronize = 0x00100000;
     private const int TokenQuery = 0x0008;
     private const int TokenElevation = 20;
+    private const uint StillActive = 259;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(int desiredAccess, bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr processHandle, out uint exitCode);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr processHandle, int desiredAccess, out IntPtr tokenHandle);
