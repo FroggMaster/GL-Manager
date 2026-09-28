@@ -976,23 +976,33 @@ public partial class GreenLumaService
             var steamExePath = Path.Combine(config.SteamPath, "Steam.exe");
             LaunchDiagnostics.SnapshotProcesses("before KillSteam", [.. SteamProcessNames, "DLLInjector"]);
 
-            if (File.Exists(steamExePath))
-                try
-                {
-                    Logger.Info("Sending Steam -shutdown for graceful exit");
-                    Process.Start(new ProcessStartInfo
+            // Only ask Steam to shut down when it is actually running. Running
+            // `Steam.exe -shutdown` unconditionally would launch Steam just to shut
+            // it down, adding churn (and a phantom instance) right before injection.
+            if (IsSteamRunning())
+            {
+                if (File.Exists(steamExePath))
+                    try
                     {
-                        FileName = steamExePath,
-                        Arguments = "-shutdown",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    });
-                    Thread.Sleep(2000);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warn($"Steam -shutdown failed: {ex.Message}");
-                }
+                        Logger.Info("Steam is running — sending -shutdown for graceful exit");
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = steamExePath,
+                            Arguments = "-shutdown",
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        });
+                        Thread.Sleep(2000);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn($"Steam -shutdown failed: {ex.Message}");
+                    }
+            }
+            else
+            {
+                Logger.Info("Steam is not running — skipping -shutdown");
+            }
 
             foreach (var processName in SteamProcessNames) KillProcessesByName(processName);
 
@@ -1004,6 +1014,21 @@ public partial class GreenLumaService
         {
             Logger.Warn($"KillSteam encountered an error: {ex.Message}");
         }
+    }
+
+    private static bool IsSteamRunning()
+    {
+        foreach (var processName in SteamProcessNames)
+        {
+            var processes = Process.GetProcessesByName(processName);
+            if (processes.Length == 0)
+                continue;
+
+            foreach (var process in processes) process.Dispose();
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
