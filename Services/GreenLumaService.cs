@@ -802,7 +802,11 @@ public partial class GreenLumaService
         return await Task.Run(() =>
         {
             var method = DetectInstallMethod(config.SteamPath, config.GreenLumaPath, config.PreferredMode);
-            LaunchDiagnostics.BeginRun(config, method, "CLI / autostart (--launch-greenluma)");
+            if (!LaunchDiagnostics.BeginRun(config, method, "CLI / autostart (--launch-greenluma)"))
+            {
+                Logger.Warn("CLI launch refused: another launch is already in progress");
+                return false;
+            }
 
             try
             {

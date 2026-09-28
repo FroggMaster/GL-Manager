@@ -65,7 +65,11 @@ public class GreenLumaLauncher
             var method = GreenLumaService.DetectInstallMethod(
                 config.SteamPath, config.GreenLumaPath, config.PreferredMode);
 
-            LaunchDiagnostics.BeginRun(config, method, "GUI (MainWindow)");
+            if (!LaunchDiagnostics.BeginRun(config, method, "GUI (MainWindow)"))
+            {
+                Logger.Warn("Launch refused: another launch is already in progress");
+                return false;
+            }
 
             try
             {

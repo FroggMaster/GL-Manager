@@ -32,6 +32,7 @@ internal static class LaunchDiagnostics
     private static readonly string LogPath = Path.Combine(LogDir, "LaunchDiagnostics.log");
     private static readonly string PrevLogPath = Path.Combine(LogDir, "LaunchDiagnostics.prev.log");
     private static readonly object Sync = new();
+    private static int _activeRuns;
 
     /// <summary>Absolute path of the diagnostic log file.</summary>
     public static string FilePath => LogPath;
@@ -43,11 +44,30 @@ internal static class LaunchDiagnostics
     /// <summary>Marker files GreenLuma's DLLInjector creates (CreateFiles / FileToCreate_N).</summary>
     private static readonly string[] MarkerFiles = ["NoQuestion.bin", "StealthMode.bin"];
 
+    /// <summary>Steam's own startup logs, which explain an unexpected client exit.</summary>
+    private static readonly string[] SteamLogFiles = ["bootstrap_log.txt", "console_log.txt"];
+
+    private const int MaxLogTailLines = 60;
+
     // ── Run framing ───────────────────────────────────────────────────────────
 
-    /// <summary>Starts a new, clearly delimited run block with a context dump.</summary>
-    public static void BeginRun(Config config, GreenLumaInstallMethod method, string source)
+    /// <summary>
+    /// Starts a new, clearly delimited run block with a context dump.
+    /// Returns <c>false</c> if another launch is already in progress — a concurrent
+    /// launch must not proceed, because its pre-launch Steam kill would terminate
+    /// the Steam the running launch just started.
+    /// </summary>
+    public static bool BeginRun(Config config, GreenLumaInstallMethod method, string source)
     {
+        var active = Interlocked.Increment(ref _activeRuns);
+        if (active > 1)
+        {
+            Section($"CONCURRENT LAUNCH ATTEMPT — {source}");
+            Line($"!! {active} launches are now active — refusing this one so it cannot kill the running launch's Steam");
+            Interlocked.Decrement(ref _activeRuns);
+            return false;
+        }
+
         Section($"LAUNCH RUN — {source}");
         Line($"started: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
         Line($"manager version: {SafeVersion()}");
@@ -61,6 +81,7 @@ internal static class LaunchDiagnostics
         Line($"Steam.exe exists: {FileExistsSafe(Path.Combine(config.SteamPath, "Steam.exe"))}");
         Line($"DLLInjector.exe exists (SteamPath): {FileExistsSafe(Path.Combine(config.SteamPath, "DLLInjector.exe"))}");
         Line($"DLLInjector.exe exists (GreenLumaPath): {FileExistsSafe(Path.Combine(config.GreenLumaPath, "DLLInjector.exe"))}");
+        return true;
     }
 
     /// <summary>Closes the current run block with a verdict.</summary>
@@ -69,6 +90,9 @@ internal static class LaunchDiagnostics
         Line($"RESULT: {(success ? "SUCCESS" : "FAILURE")} — {summary}");
         Line($"finished: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
         Blank();
+
+        if (Interlocked.Decrement(ref _activeRuns) < 0)
+            Interlocked.Exchange(ref _activeRuns, 0);
     }
 
     // ── Primitive writers ─────────────────────────────────────────────────────
@@ -167,15 +191,31 @@ internal static class LaunchDiagnostics
         {
             Line($"steam.exe did NOT appear within {appearTimeout.TotalSeconds:F0}s");
             LogInjectorArtifacts(steamPath, greenLumaPath);
+            LogSteamLogs(steamPath);
             ReleaseHandles(tracked);
             return false;
         }
 
         // Phase 2 — stability window. Tolerates the bootstrap hand-off between PIDs.
+        var firstSeenAt = DateTime.UtcNow;
+        var moduleChecked = false;
         var stableUntil = DateTime.UtcNow + stabilityWindow;
         while (DateTime.UtcNow < stableUntil)
         {
             SampleSteam(tracked, out _);
+
+            // Confirm injection while Steam is still alive — it may exit moments later,
+            // and an end-of-watch check would then never run.
+            if (!moduleChecked && DateTime.UtcNow - firstSeenAt >= TimeSpan.FromSeconds(2))
+            {
+                var aliveNow = AlivePids(tracked);
+                if (aliveNow.Count > 0)
+                {
+                    CheckGreenLumaModule(aliveNow);
+                    moduleChecked = true;
+                }
+            }
+
             Thread.Sleep(200);
         }
 
@@ -205,10 +245,11 @@ internal static class LaunchDiagnostics
             ? $"steam.exe RUNNING at end: PID(s) {string.Join(", ", alive.Select(a => a.Pid))} (instances seen: {tracked.Count})"
             : $"steam.exe NOT running at end (instances seen: {tracked.Count})");
 
-        if (running)
+        if (running && !moduleChecked)
             CheckGreenLumaModule(alive.Select(a => a.Pid).ToList());
 
         LogInjectorArtifacts(steamPath, greenLumaPath);
+        LogSteamLogs(steamPath);
         ReleaseHandles(tracked);
         return running;
     }
@@ -326,6 +367,57 @@ internal static class LaunchDiagnostics
                 var path = Path.Combine(dir, name);
                 Line($"  {path}: {FileExistsSafe(path)}");
             }
+        }
+    }
+
+    /// <summary>PIDs of tracked steam.exe instances not observed to have exited.</summary>
+    private static List<int> AlivePids(Dictionary<int, TrackedSteam> tracked)
+        => tracked.Values.Where(t => !t.ExitLogged).Select(t => t.Pid).ToList();
+
+    /// <summary>
+    /// Dumps the tail of Steam's own startup logs so an unexpected exit can be
+    /// explained by Steam itself rather than inferred from the process lifecycle.
+    /// </summary>
+    private static void LogSteamLogs(string? steamPath)
+    {
+        if (string.IsNullOrWhiteSpace(steamPath))
+            return;
+
+        var logsDir = Path.Combine(steamPath, "logs");
+        Line($"--- Steam logs ({logsDir}) ---");
+
+        if (!Directory.Exists(logsDir))
+        {
+            Line("  (no logs directory)");
+            return;
+        }
+
+        foreach (var name in SteamLogFiles)
+        {
+            var path = Path.Combine(logsDir, name);
+            if (!FileExistsSafe(path))
+            {
+                Line($"  {name}: (missing)");
+                continue;
+            }
+
+            Block($"tail of {name} (last {MaxLogTailLines} lines)", TailFile(path, MaxLogTailLines));
+        }
+    }
+
+    private static string TailFile(string path, int maxLines)
+    {
+        try
+        {
+            using var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            var lines = reader.ReadToEnd().Replace("\r\n", "\n").Split('\n');
+            return string.Join(Environment.NewLine, lines.TakeLast(maxLines));
+        }
+        catch (Exception ex)
+        {
+            return $"(read failed: {ex.GetType().Name}: {ex.Message})";
         }
     }
 

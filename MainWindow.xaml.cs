@@ -48,6 +48,7 @@ public partial class MainWindow
     private readonly NotificationManager _notificationManager;
 
     // UI state
+    private bool _launchInProgress;
     private readonly ObservableCollection<string> _profiles;
     private Config? _config;
     private CancellationTokenSource? _profileLoadCts;
@@ -677,6 +678,15 @@ public partial class MainWindow
 
     private async void LaunchGreenlumaButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_launchInProgress)
+        {
+            Logger.Warn("Launch already in progress; ignoring duplicate request");
+            return;
+        }
+
+        _launchInProgress = true;
+        BtnLaunchGreenluma.IsEnabled = false;
+
         try
         {
             if (_config == null)
@@ -777,6 +787,11 @@ public partial class MainWindow
         catch (Exception ex)
         {
             Logger.Error(ex, "Unhandled exception in LaunchGreenlumaButton_Click");
+        }
+        finally
+        {
+            _launchInProgress = false;
+            BtnLaunchGreenluma.IsEnabled = true;
         }
     }
 
