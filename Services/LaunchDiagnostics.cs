@@ -49,6 +49,13 @@ internal static class LaunchDiagnostics
 
     private const int MaxLogTailLines = 60;
 
+    // Launch-watch budgets. Deliberately generous so a slow / cold Steam start on a
+    // mid-range PC is never misread as a failure (and never triggers a kill+retry).
+    public static readonly TimeSpan SteamAppearTimeout = TimeSpan.FromSeconds(90);
+    public static readonly TimeSpan SteamAbsenceTolerance = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan SteamStabilityDuration = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan SteamOverallBudget = TimeSpan.FromSeconds(120);
+
     // ── Run framing ───────────────────────────────────────────────────────────
 
     /// <summary>
@@ -153,33 +160,36 @@ internal static class LaunchDiagnostics
     // ── Steam lifecycle watch ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Waits for <c>steam.exe</c> to appear, then verifies Steam is still running
-    /// at the end of a stability window. Steam's bootstrap process hands off to a
-    /// successor and exits normally, so tracking is keyed on the process NAME, not
-    /// on a single PID: every instance seen is logged (appearance details plus a
-    /// reliably-read exit code) and success means "some steam.exe is alive at the
-    /// end". A still-quiet moment between bootstrap instances is tolerated via a
-    /// short settle window instead of being reported as a crash. When a GreenLuma
-    /// module is loaded into the surviving instance it is reported, and the
-    /// injector's marker files are checked.
+    /// Waits for <c>steam.exe</c> to appear, then decides whether Steam "launched".
+    ///
+    /// Steam's bootstrap hands off to a successor and exits normally, and a cold start
+    /// can take a long time (update check, checksum verify, CEF/steamwebhelper). So the
+    /// watch waits up to <paramref name="appearTimeout"/> for the first steam.exe, then
+    /// keeps watching until either Steam has been alive continuously for
+    /// <paramref name="stabilityDuration"/> (treat as launched), it has been absent for
+    /// longer than <paramref name="absenceTolerance"/> (treat as exited), or
+    /// <paramref name="overallBudget"/> expires. Success means a steam.exe is alive now
+    /// or was alive within the absence tolerance. Tracking is keyed on the process NAME
+    /// (not a single PID) so a slow hand-off is tolerated rather than misread as a crash.
     /// </summary>
-    /// <returns><c>true</c> if a steam.exe was still running at the end of the watch.</returns>
-    public static bool WatchSteam(TimeSpan appearTimeout, TimeSpan stabilityWindow,
+    public static bool WatchSteam(TimeSpan appearTimeout, TimeSpan absenceTolerance,
+        TimeSpan stabilityDuration, TimeSpan overallBudget,
         string? steamPath = null, string? greenLumaPath = null)
     {
         Section("Steam lifecycle watch");
+        var startedAt = DateTime.UtcNow;
         var started = Stopwatch.StartNew();
         var tracked = new Dictionary<int, TrackedSteam>();
-        var sawSteam = false;
+        var appeared = false;
 
-        // Phase 1 — wait for the first steam.exe.
-        var appearDeadline = DateTime.UtcNow + appearTimeout;
+        // Phase 1 — wait for the first steam.exe to appear.
+        var appearDeadline = startedAt + appearTimeout;
         while (DateTime.UtcNow < appearDeadline)
         {
             SampleSteam(tracked, out var anyAlive);
             if (anyAlive)
             {
-                sawSteam = true;
+                appeared = true;
                 Line($"steam.exe appeared after {started.Elapsed.TotalSeconds:F2}s");
                 break;
             }
@@ -187,7 +197,7 @@ internal static class LaunchDiagnostics
             Thread.Sleep(200);
         }
 
-        if (!sawSteam)
+        if (!appeared)
         {
             Line($"steam.exe did NOT appear within {appearTimeout.TotalSeconds:F0}s");
             LogInjectorArtifacts(steamPath, greenLumaPath);
@@ -196,17 +206,41 @@ internal static class LaunchDiagnostics
             return false;
         }
 
-        // Phase 2 — stability window. Tolerates the bootstrap hand-off between PIDs.
-        var firstSeenAt = DateTime.UtcNow;
+        // Phase 2 — wait for Steam to settle: alive continuously for stabilityDuration,
+        // or give up once it has been absent longer than absenceTolerance, or budget out.
+        var budgetDeadline = startedAt + overallBudget;
+        var lastAliveUtc = DateTime.UtcNow;
+        var stableSinceUtc = DateTime.UtcNow;
         var moduleChecked = false;
-        var stableUntil = DateTime.UtcNow + stabilityWindow;
-        while (DateTime.UtcNow < stableUntil)
+
+        while (DateTime.UtcNow < budgetDeadline)
         {
-            SampleSteam(tracked, out _);
+            SampleSteam(tracked, out var anyAlive);
+
+            if (anyAlive)
+            {
+                lastAliveUtc = DateTime.UtcNow;
+
+                if (DateTime.UtcNow - stableSinceUtc >= stabilityDuration)
+                {
+                    Line($"steam.exe alive continuously for {stabilityDuration.TotalSeconds:F0}s — treating as launched");
+                    break;
+                }
+            }
+            else
+            {
+                stableSinceUtc = DateTime.UtcNow; // a gap restarts the stability streak
+
+                if (DateTime.UtcNow - lastAliveUtc > absenceTolerance)
+                {
+                    Line($"steam.exe absent for more than {absenceTolerance.TotalSeconds:F0}s — treating as exited");
+                    break;
+                }
+            }
 
             // Confirm injection while Steam is still alive — it may exit moments later,
             // and an end-of-watch check would then never run.
-            if (!moduleChecked && DateTime.UtcNow - firstSeenAt >= TimeSpan.FromSeconds(2))
+            if (!moduleChecked && DateTime.UtcNow - startedAt >= TimeSpan.FromSeconds(2))
             {
                 var aliveNow = AlivePids(tracked);
                 if (aliveNow.Count > 0)
@@ -219,34 +253,16 @@ internal static class LaunchDiagnostics
             Thread.Sleep(200);
         }
 
-        var alive = tracked.Values.Where(t => !t.ExitLogged).ToList();
+        var alive = AlivePids(tracked);
+        var absentFor = DateTime.UtcNow - lastAliveUtc;
+        var running = alive.Count > 0 || absentFor <= absenceTolerance;
 
-        // Phase 3 — if nothing is alive right now, give Steam a short settle window
-        // to bring up a successor before declaring failure (avoids false negatives).
-        if (alive.Count == 0)
-        {
-            Line("no steam.exe alive at end of stability window — waiting up to 5s for a successor");
-            var settleUntil = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-            while (DateTime.UtcNow < settleUntil)
-            {
-                SampleSteam(tracked, out var anyAlive);
-                if (anyAlive)
-                {
-                    alive = tracked.Values.Where(t => !t.ExitLogged).ToList();
-                    break;
-                }
-
-                Thread.Sleep(200);
-            }
-        }
-
-        var running = alive.Count > 0;
         Line(running
-            ? $"steam.exe RUNNING at end: PID(s) {string.Join(", ", alive.Select(a => a.Pid))} (instances seen: {tracked.Count})"
-            : $"steam.exe NOT running at end (instances seen: {tracked.Count})");
+            ? $"steam.exe RUNNING: PID(s) {string.Join(", ", alive)} (instances seen: {tracked.Count})"
+            : $"steam.exe NOT running (instances seen: {tracked.Count}, absent {absentFor.TotalSeconds:F1}s)");
 
-        if (running && !moduleChecked)
-            CheckGreenLumaModule(alive.Select(a => a.Pid).ToList());
+        if (running && !moduleChecked && alive.Count > 0)
+            CheckGreenLumaModule(alive);
 
         LogInjectorArtifacts(steamPath, greenLumaPath);
         LogSteamLogs(steamPath);

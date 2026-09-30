@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
 
@@ -89,41 +90,82 @@ public class GreenLumaLauncher
                     return false;
                 }
 
-                Logger.Info("Killing Steam processes...");
-                GreenLumaService.KillSteam(config);
+                const int maxAttempts = 3;
+                const int retryDelayMs = 2000;
+                var result = false;
 
-                var result = method switch
+                // The injection is intermittently lost: in stealth mode Steam is
+                // launched with no -inhibitbootstrap, so its bootstrap can hand off to
+                // a successor while the injector runs, racing the injection. Retry a
+                // few times before giving up rather than reporting a one-shot failure.
+                for (var attempt = 1; attempt <= maxAttempts && !result; attempt++)
                 {
-                    GreenLumaInstallMethod.Normal =>
-                        RunDllInjector(config.SteamPath, config),
-                    GreenLumaInstallMethod.StealthAny =>
-                        RunDllInjector(config.GreenLumaPath, config),
-                    GreenLumaInstallMethod.User32 =>
-                        RunSteamDirectly(config.SteamPath),
-                    _ => false
-                };
+                    var steamStillPresent = attempt > 1 && GreenLumaService.IsSteamRunning();
 
-                if (result)
-                {
-                    Logger.Info($"Launch initiated — method: {method}, watching Steam lifecycle...");
-                    LaunchDiagnostics.Step("Watching Steam lifecycle...");
-                    result = LaunchDiagnostics.WatchSteam(
-                        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(12), config.SteamPath, config.GreenLumaPath);
-
-                    if (result)
+                    if (attempt > 1)
                     {
-                        Logger.Info("Steam process confirmed running at end of watch");
-                        LaunchDiagnostics.Line("Steam confirmed running at end of watch");
+                        LaunchDiagnostics.Section($"RETRY {attempt}/{maxAttempts}");
+
+                        if (steamStillPresent)
+                        {
+                            Logger.Warn("Steam is still present — not killing it; continuing to watch");
+                            LaunchDiagnostics.Line("Steam present at retry — skipping kill/relaunch, watching again");
+                        }
+                        else
+                        {
+                            Logger.Info($"Retrying launch ({attempt}/{maxAttempts}) in {retryDelayMs}ms");
+                            Thread.Sleep(retryDelayMs);
+                        }
+                    }
+
+                    if (!steamStillPresent)
+                    {
+                        Logger.Info("Killing Steam processes...");
+                        GreenLumaService.KillSteam(config);
+
+                        var launched = method switch
+                        {
+                            GreenLumaInstallMethod.Normal =>
+                                RunDllInjector(config.SteamPath, config),
+                            GreenLumaInstallMethod.StealthAny =>
+                                RunDllInjector(config.GreenLumaPath, config),
+                            GreenLumaInstallMethod.User32 =>
+                                RunSteamDirectly(config.SteamPath),
+                            _ => false
+                        };
+
+                        if (!launched)
+                        {
+                            Logger.Error($"Launch attempt {attempt} failed — method: {method}");
+                            LaunchDiagnostics.Line($"Launch attempt {attempt} failed — method: {method}");
+                            continue;
+                        }
+
+                        Logger.Info($"Launch initiated (attempt {attempt}) — method: {method}, watching Steam lifecycle...");
                     }
                     else
                     {
-                        Logger.Error("Steam did not appear, or was not running at the end of the watch");
-                        LaunchDiagnostics.Line("Steam did not appear, or was not running at the end of the watch");
+                        Logger.Info($"Re-watching the existing Steam process (attempt {attempt})...");
                     }
-                }
-                else
-                {
-                    Logger.Error($"Launch failed — method: {method}");
+
+                    LaunchDiagnostics.Step($"Watching Steam lifecycle (attempt {attempt})...");
+                    result = LaunchDiagnostics.WatchSteam(
+                        LaunchDiagnostics.SteamAppearTimeout,
+                        LaunchDiagnostics.SteamAbsenceTolerance,
+                        LaunchDiagnostics.SteamStabilityDuration,
+                        LaunchDiagnostics.SteamOverallBudget,
+                        config.SteamPath, config.GreenLumaPath);
+
+                    if (result)
+                    {
+                        Logger.Info($"Steam process confirmed running at end of watch (attempt {attempt})");
+                        LaunchDiagnostics.Line($"Steam confirmed running at end of watch (attempt {attempt})");
+                    }
+                    else
+                    {
+                        Logger.Error($"Steam was not running at the end of the watch (attempt {attempt})");
+                        LaunchDiagnostics.Line($"Steam was not running at the end of the watch (attempt {attempt})");
+                    }
                 }
 
                 LaunchDiagnostics.EndRun(result, result

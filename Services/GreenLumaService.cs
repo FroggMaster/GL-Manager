@@ -818,14 +818,53 @@ public partial class GreenLumaService
                     return false;
                 }
 
-                KillSteam(config);
+                const int maxAttempts = 3;
+                const int retryDelayMs = 2000;
+                var result = false;
 
-                var result = LaunchInjector(config);
-                if (result)
+                for (var attempt = 1; attempt <= maxAttempts && !result; attempt++)
                 {
-                    LaunchDiagnostics.Step("Watching Steam lifecycle...");
+                    var steamStillPresent = attempt > 1 && IsSteamRunning();
+
+                    if (attempt > 1)
+                    {
+                        LaunchDiagnostics.Section($"RETRY {attempt}/{maxAttempts}");
+
+                        if (steamStillPresent)
+                        {
+                            Logger.Warn("CLI: Steam is still present — not killing it; continuing to watch");
+                            LaunchDiagnostics.Line("Steam present at retry — skipping kill/relaunch, watching again");
+                        }
+                        else
+                        {
+                            Logger.Info($"CLI launch retry ({attempt}/{maxAttempts}) in {retryDelayMs}ms");
+                            Thread.Sleep(retryDelayMs);
+                        }
+                    }
+
+                    if (!steamStillPresent)
+                    {
+                        KillSteam(config);
+
+                        if (!LaunchInjector(config))
+                        {
+                            Logger.Error($"CLI launch attempt {attempt}: injector failed to start");
+                            LaunchDiagnostics.Line($"CLI launch attempt {attempt}: injector failed to start");
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        Logger.Info($"CLI: re-watching the existing Steam process (attempt {attempt})...");
+                    }
+
+                    LaunchDiagnostics.Step($"Watching Steam lifecycle (attempt {attempt})...");
                     result = LaunchDiagnostics.WatchSteam(
-                        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(12), config.SteamPath, config.GreenLumaPath);
+                        LaunchDiagnostics.SteamAppearTimeout,
+                        LaunchDiagnostics.SteamAbsenceTolerance,
+                        LaunchDiagnostics.SteamStabilityDuration,
+                        LaunchDiagnostics.SteamOverallBudget,
+                        config.SteamPath, config.GreenLumaPath);
                 }
 
                 LaunchDiagnostics.EndRun(result, result
@@ -989,7 +1028,7 @@ public partial class GreenLumaService
         }
     }
 
-    private static bool IsSteamRunning()
+    internal static bool IsSteamRunning()
     {
         foreach (var processName in SteamProcessNames)
         {
