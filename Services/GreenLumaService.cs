@@ -884,89 +884,62 @@ public partial class GreenLumaService
     }
 
     /// <summary>
-    /// Starts DLLInjector while capturing its PID, stdout/stderr and exit code
-    /// for diagnostics. The manager always runs elevated (requireAdministrator
-    /// manifest), so the injector can be launched without shell-execute and
-    /// still inherit an elevated token. Falls back to a plain shell-execute
-    /// launch if the redirected start fails for any reason.
+    /// Starts DLLInjector through Explorer so its parent process and inherited
+    /// environment match a manual double-click (Explorer launches the injector),
+    /// rather than the elevated manager being the injector's parent. A plain
+    /// ShellExecute from the manager still made the manager the parent and did not
+    /// help. The injector PID is reported best-effort by name.
     /// </summary>
     internal static bool StartInjector(string injectorPath, string workingDirectory)
     {
         try
         {
-            var startInfo = new ProcessStartInfo
+            LaunchDiagnostics.Line(
+                $"Launching DLLInjector via Explorer (double-click equivalent): '{injectorPath}' workdir='{workingDirectory}'");
+
+            // Explorer executes the target and becomes its parent, exactly as a
+            // double-click would. The working directory is set by Explorer to the
+            // executable's own folder, so it does not need to be passed.
+            Process.Start(new ProcessStartInfo
             {
-                FileName = injectorPath,
-                WorkingDirectory = workingDirectory,
+                FileName = "explorer.exe",
+                Arguments = $"\"{injectorPath}\"",
                 UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
+                CreateNoWindow = true
+            });
 
-            var startedAt = DateTime.UtcNow;
-            var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-
-            process.OutputDataReceived += (_, e) =>
-            {
-                if (e.Data != null) LaunchDiagnostics.Line($"[injector stdout] {e.Data}");
-            };
-            process.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data != null) LaunchDiagnostics.Line($"[injector stderr] {e.Data}");
-            };
-            process.Exited += (_, _) =>
-            {
-                try
-                {
-                    LaunchDiagnostics.Line(
-                        $"DLLInjector exited after {(DateTime.UtcNow - startedAt).TotalSeconds:F1}s (exitCode={process.ExitCode})");
-                }
-                catch
-                {
-                    LaunchDiagnostics.Line("DLLInjector exited (exit code unavailable)");
-                }
-                finally
-                {
-                    try { process.Dispose(); } catch { /* ignored */ }
-                }
-            };
-
-            if (!process.Start())
-            {
-                LaunchDiagnostics.Line("DLLInjector failed to start (Process.Start returned false)");
-                process.Dispose();
-                return false;
-            }
-
-            LaunchDiagnostics.Line($"DLLInjector started: PID={process.Id} path='{injectorPath}' workdir='{workingDirectory}'");
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+            var pid = WaitForInjectorPid(TimeSpan.FromSeconds(5));
+            LaunchDiagnostics.Line(pid > 0
+                ? $"DLLInjector started: PID={pid} path='{injectorPath}'"
+                : "DLLInjector launch requested via Explorer, but no DLLInjector process was observed");
             return true;
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to start DLLInjector with output capture");
-            LaunchDiagnostics.Line($"!! DLLInjector redirected start FAILED: {ex.GetType().Name}: {ex.Message} — falling back");
-
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = injectorPath,
-                    WorkingDirectory = workingDirectory,
-                    UseShellExecute = true
-                });
-                LaunchDiagnostics.Line("DLLInjector launched via shell-execute fallback (no output/exit capture)");
-                return true;
-            }
-            catch (Exception fallbackEx)
-            {
-                Logger.Error(fallbackEx, "Fallback DLLInjector launch failed");
-                LaunchDiagnostics.Line($"!! DLLInjector shell-execute fallback FAILED: {fallbackEx.GetType().Name}: {fallbackEx.Message}");
-                return false;
-            }
+            Logger.Error(ex, "Failed to start DLLInjector via Explorer");
+            LaunchDiagnostics.Line($"!! DLLInjector Explorer launch FAILED: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
+    }
+
+    /// <summary>Best-effort PID lookup for a shell-executed DLLInjector process.</summary>
+    private static int WaitForInjectorPid(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var processes = Process.GetProcessesByName("DLLInjector");
+            if (processes.Length > 0)
+            {
+                var pid = processes[0].Id;
+                foreach (var process in processes) process.Dispose();
+                return pid;
+            }
+
+            Thread.Sleep(100);
+        }
+
+        return -1;
     }
 
     internal static void KillSteam(Config config)
