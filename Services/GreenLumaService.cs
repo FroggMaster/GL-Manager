@@ -801,20 +801,81 @@ public partial class GreenLumaService
     {
         return await Task.Run(() =>
         {
+            var method = DetectInstallMethod(config.SteamPath, config.GreenLumaPath, config.PreferredMode);
+            if (!LaunchDiagnostics.BeginRun(config, method, "CLI / autostart (--launch-greenluma)"))
+            {
+                Logger.Warn("CLI launch refused: another launch is already in progress");
+                return false;
+            }
+
             try
             {
                 Logger.Info("CLI launch started");
 
                 if (!ValidatePaths(config))
+                {
+                    LaunchDiagnostics.EndRun(false, "path validation failed");
                     return false;
+                }
 
-                KillSteam(config);
+                const int maxAttempts = 3;
+                const int retryDelayMs = 2000;
+                var result = false;
 
-                return LaunchInjector(config);
+                for (var attempt = 1; attempt <= maxAttempts && !result; attempt++)
+                {
+                    var steamStillPresent = attempt > 1 && IsSteamRunning();
+
+                    if (attempt > 1)
+                    {
+                        LaunchDiagnostics.Section($"RETRY {attempt}/{maxAttempts}");
+
+                        if (steamStillPresent)
+                        {
+                            Logger.Warn("CLI: Steam is still present — not killing it; continuing to watch");
+                            LaunchDiagnostics.Line("Steam present at retry — skipping kill/relaunch, watching again");
+                        }
+                        else
+                        {
+                            Logger.Info($"CLI launch retry ({attempt}/{maxAttempts}) in {retryDelayMs}ms");
+                            Thread.Sleep(retryDelayMs);
+                        }
+                    }
+
+                    if (!steamStillPresent)
+                    {
+                        KillSteam(config);
+
+                        if (!LaunchInjector(config))
+                        {
+                            Logger.Error($"CLI launch attempt {attempt}: injector failed to start");
+                            LaunchDiagnostics.Line($"CLI launch attempt {attempt}: injector failed to start");
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        Logger.Info($"CLI: re-watching the existing Steam process (attempt {attempt})...");
+                    }
+
+                    LaunchDiagnostics.Step($"Watching Steam lifecycle (attempt {attempt})...");
+                    result = LaunchDiagnostics.WatchSteam(
+                        LaunchDiagnostics.SteamAppearTimeout,
+                        LaunchDiagnostics.SteamAbsenceTolerance,
+                        LaunchDiagnostics.SteamStabilityDuration,
+                        LaunchDiagnostics.SteamOverallBudget,
+                        config.SteamPath, config.GreenLumaPath);
+                }
+
+                LaunchDiagnostics.EndRun(result, result
+                    ? "DLLInjector started and Steam was running at end of watch"
+                    : "DLLInjector failed, or Steam was not running at end of watch");
+                return result;
             }
             catch (Exception ex)
             {
                 Logger.Error(ex, "Unhandled exception in CLI launch");
+                LaunchDiagnostics.EndRun(false, $"unhandled exception: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
         });
@@ -850,6 +911,7 @@ public partial class GreenLumaService
         if (!File.Exists(injectorPath))
         {
             Logger.Error($"CLI launch: DLLInjector.exe not found at '{injectorPath}'");
+            LaunchDiagnostics.Line($"DLLInjector.exe not found at '{injectorPath}'");
             return false;
         }
 
@@ -857,14 +919,66 @@ public partial class GreenLumaService
         UpdateInjectorIni(config);
 
         Logger.Info($"CLI launch: starting DLLInjector.exe from '{config.GreenLumaPath}'");
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = injectorPath,
-            WorkingDirectory = config.GreenLumaPath,
-            UseShellExecute = true
-        });
+        return StartInjector(injectorPath, config.GreenLumaPath);
+    }
 
-        return true;
+    /// <summary>
+    /// Starts DLLInjector through Explorer so its parent process and inherited
+    /// environment match a manual double-click (Explorer launches the injector),
+    /// rather than the elevated manager being the injector's parent. A plain
+    /// ShellExecute from the manager still made the manager the parent and did not
+    /// help. The injector PID is reported best-effort by name.
+    /// </summary>
+    internal static bool StartInjector(string injectorPath, string workingDirectory)
+    {
+        try
+        {
+            LaunchDiagnostics.Line(
+                $"Launching DLLInjector via Explorer (double-click equivalent): '{injectorPath}' workdir='{workingDirectory}'");
+
+            // Explorer executes the target and becomes its parent, exactly as a
+            // double-click would. The working directory is set by Explorer to the
+            // executable's own folder, so it does not need to be passed.
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{injectorPath}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            var pid = WaitForInjectorPid(TimeSpan.FromSeconds(5));
+            LaunchDiagnostics.Line(pid > 0
+                ? $"DLLInjector started: PID={pid} path='{injectorPath}'"
+                : "DLLInjector launch requested via Explorer, but no DLLInjector process was observed");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to start DLLInjector via Explorer");
+            LaunchDiagnostics.Line($"!! DLLInjector Explorer launch FAILED: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Best-effort PID lookup for a shell-executed DLLInjector process.</summary>
+    private static int WaitForInjectorPid(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var processes = Process.GetProcessesByName("DLLInjector");
+            if (processes.Length > 0)
+            {
+                var pid = processes[0].Id;
+                foreach (var process in processes) process.Dispose();
+                return pid;
+            }
+
+            Thread.Sleep(100);
+        }
+
+        return -1;
     }
 
     internal static void KillSteam(Config config)
@@ -872,30 +986,80 @@ public partial class GreenLumaService
         try
         {
             var steamExePath = Path.Combine(config.SteamPath, "Steam.exe");
+            LaunchDiagnostics.SnapshotProcesses("before KillSteam", [.. SteamProcessNames, "DLLInjector"]);
 
-            if (File.Exists(steamExePath))
-                try
-                {
-                    Logger.Info("Sending Steam -shutdown for graceful exit");
-                    Process.Start(new ProcessStartInfo
+            // Only ask Steam to shut down when it is actually running. Running
+            // `Steam.exe -shutdown` unconditionally would launch Steam just to shut
+            // it down, adding churn (and a phantom instance) right before injection.
+            if (IsSteamRunning())
+            {
+                if (File.Exists(steamExePath))
+                    try
                     {
-                        FileName = steamExePath,
-                        Arguments = "-shutdown",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    });
-                    Thread.Sleep(2000);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warn($"Steam -shutdown failed: {ex.Message}");
-                }
+                        Logger.Info("Steam is running — sending -shutdown for graceful exit");
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = steamExePath,
+                            Arguments = "-shutdown",
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        });
+                        Thread.Sleep(2000);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn($"Steam -shutdown failed: {ex.Message}");
+                    }
+            }
+            else
+            {
+                Logger.Info("Steam is not running — skipping -shutdown");
+            }
 
             foreach (var processName in SteamProcessNames) KillProcessesByName(processName);
+
+            Thread.Sleep(500);
+            VerifyNoSteamRemaining();
+            LaunchDiagnostics.SnapshotProcesses("after KillSteam", [.. SteamProcessNames, "DLLInjector"]);
         }
         catch (Exception ex)
         {
             Logger.Warn($"KillSteam encountered an error: {ex.Message}");
+        }
+    }
+
+    internal static bool IsSteamRunning()
+    {
+        foreach (var processName in SteamProcessNames)
+        {
+            var processes = Process.GetProcessesByName(processName);
+            if (processes.Length == 0)
+                continue;
+
+            foreach (var process in processes) process.Dispose();
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Warns if any Steam process survived the kill pass, so that a still-running
+    /// instance can be correlated with a later injection failure.
+    /// </summary>
+    private static void VerifyNoSteamRemaining()
+    {
+        foreach (var processName in SteamProcessNames)
+        {
+            var remaining = Process.GetProcessesByName(processName);
+            if (remaining.Length > 0)
+            {
+                var pids = string.Join(", ", remaining.Select(p => p.Id));
+                Logger.Warn($"{processName} still running after KillSteam: PID(s) {pids}");
+                LaunchDiagnostics.Line($"!! {processName} STILL RUNNING after KillSteam: PID(s) {pids}");
+            }
+
+            foreach (var process in remaining) process.Dispose();
         }
     }
 
@@ -945,6 +1109,7 @@ public partial class GreenLumaService
             if (!File.Exists(iniPath))
             {
                 Logger.Debug($"DLLInjector.ini not found at '{iniPath}', skipping update");
+                LaunchDiagnostics.Line($"DLLInjector.ini not found at '{iniPath}' — skipping update");
                 return;
             }
 
@@ -955,10 +1120,18 @@ public partial class GreenLumaService
 
             File.WriteAllLines(iniPath, updatedLines);
             Logger.Debug($"Updated DLLInjector.ini at '{iniPath}' with {settings.Count} setting(s)");
+
+            LaunchDiagnostics.Block($"DLLInjector.ini BEFORE ({iniPath})",
+                string.Join(Environment.NewLine, lines));
+            LaunchDiagnostics.Block("DLLInjector.ini settings applied",
+                string.Join(Environment.NewLine, settings.Select(kv => $"{kv.Key}={kv.Value}")));
+            LaunchDiagnostics.Block("DLLInjector.ini AFTER",
+                string.Join(Environment.NewLine, updatedLines));
         }
         catch (Exception ex)
         {
             Logger.Warn($"Failed to update DLLInjector.ini: {ex.Message}");
+            LaunchDiagnostics.Line($"!! Failed to update DLLInjector.ini: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -1114,6 +1287,7 @@ public partial class GreenLumaService
     private static List<string> ApplySettings(List<string> originalLines, Dictionary<string, string> settings)
     {
         var result = new List<string>();
+        var applied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var line in originalLines)
         {
@@ -1130,12 +1304,19 @@ public partial class GreenLumaService
                     {
                         result.Add($"{setting.Key}={setting.Value}");
                         matched = true;
+                        applied.Add(setting.Key);
                         break;
                     }
             }
 
             if (!matched) result.Add(line);
         }
+
+        // Settings the manager wants to control but that are absent from the file
+        // must still be written; otherwise the requested value is silently a no-op.
+        foreach (var setting in settings)
+            if (!applied.Contains(setting.Key))
+                result.Add($"{setting.Key}={setting.Value}");
 
         return result;
     }

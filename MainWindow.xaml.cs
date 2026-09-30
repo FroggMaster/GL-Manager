@@ -48,6 +48,7 @@ public partial class MainWindow
     private readonly NotificationManager _notificationManager;
 
     // UI state
+    private bool _launchInProgress;
     private readonly ObservableCollection<string> _profiles;
     private Config? _config;
     private CancellationTokenSource? _profileLoadCts;
@@ -677,6 +678,15 @@ public partial class MainWindow
 
     private async void LaunchGreenlumaButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_launchInProgress)
+        {
+            Logger.Warn("Launch already in progress; ignoring duplicate request");
+            return;
+        }
+
+        _launchInProgress = true;
+        BtnLaunchGreenluma.IsEnabled = false;
+
         try
         {
             if (_config == null)
@@ -763,20 +773,27 @@ public partial class MainWindow
 
             _profileController.SaveCurrentProfile();
 
+            _notificationManager.ShowToast("Restarting Steam. This can take about a minute, please wait…");
+
             if (_launcher.ValidatePaths(_config) && await _launcher.LaunchAsync(_config))
             {
                 Logger.Info("Launch completed successfully");
-                _notificationManager.ShowToast("GreenLuma injected into the Steam process. Please wait a moment while Steam launches.");
+                _notificationManager.ShowToast("GreenLuma injected successfully");
             }
             else
             {
                 Logger.Error("Launch failed");
-                _notificationManager.ShowToast("Failed to launch GreenLuma", false);
+                _notificationManager.ShowToast("GreenLuma injection failed", false);
             }
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Unhandled exception in LaunchGreenlumaButton_Click");
+        }
+        finally
+        {
+            _launchInProgress = false;
+            BtnLaunchGreenluma.IsEnabled = true;
         }
     }
 

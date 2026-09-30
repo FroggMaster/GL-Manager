@@ -10,6 +10,7 @@ public partial class App
     protected override void OnStartup(StartupEventArgs e)
     {
         Logger.Info("Application starting up");
+        Logger.Info($"Launch diagnostics log: {LaunchDiagnostics.FilePath}");
         base.OnStartup(e);
         try
         {
