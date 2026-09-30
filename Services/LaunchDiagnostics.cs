@@ -162,7 +162,7 @@ internal static class LaunchDiagnostics
     /// <summary>
     /// Waits for <c>steam.exe</c> to appear, then decides whether Steam "launched".
     ///
-    /// Steam's bootstrap hands off to a successor and exits normally, and a cold start
+    /// Steam's bootstrap hands off to a successor and exits normally, and a slow start
     /// can take a long time (update check, checksum verify, CEF/steamwebhelper). So the
     /// watch waits up to <paramref name="appearTimeout"/> for the first steam.exe, then
     /// keeps watching until either Steam has been alive continuously for

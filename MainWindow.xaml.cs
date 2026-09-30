@@ -773,15 +773,17 @@ public partial class MainWindow
 
             _profileController.SaveCurrentProfile();
 
+            _notificationManager.ShowToast("Restarting Steam. This can take about a minute, please wait…");
+
             if (_launcher.ValidatePaths(_config) && await _launcher.LaunchAsync(_config))
             {
                 Logger.Info("Launch completed successfully");
-                _notificationManager.ShowToast("GreenLuma injected into the Steam process. Please wait a moment while Steam launches.");
+                _notificationManager.ShowToast("GreenLuma injected successfully");
             }
             else
             {
                 Logger.Error("Launch failed");
-                _notificationManager.ShowToast("Failed to launch GreenLuma", false);
+                _notificationManager.ShowToast("GreenLuma injection failed", false);
             }
         }
         catch (Exception ex)
