@@ -112,6 +112,58 @@ public class ProfileService
         }
     }
 
+    public static bool Rename(string oldName, string newName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(oldName) || string.IsNullOrWhiteSpace(newName))
+                return false;
+
+            var oldPath = GetProfileFilePath(oldName);
+            var newPath = GetProfileFilePath(newName);
+
+            // Nothing to do when the name (and therefore the file) is unchanged.
+            if (string.Equals(oldPath, newPath, StringComparison.Ordinal) &&
+                string.Equals(oldName, newName, StringComparison.Ordinal))
+                return true;
+
+            if (!File.Exists(oldPath))
+            {
+                Logger.Warn($"Cannot rename profile: source '{oldPath}' does not exist");
+                return false;
+            }
+
+            // Never overwrite an existing, differently named profile file.
+            if (!string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase) && File.Exists(newPath))
+            {
+                Logger.Warn($"Cannot rename profile: target '{newPath}' already exists");
+                return false;
+            }
+
+            var profile = DeserializeProfile(File.ReadAllText(oldPath, Encoding.UTF8));
+            if (profile == null)
+            {
+                Logger.Error($"Failed to rename profile: could not read '{oldPath}'");
+                return false;
+            }
+
+            profile.Name = newName;
+            File.WriteAllText(newPath, SerializeProfile(profile), Encoding.UTF8);
+
+            // Only remove the old file when it is genuinely a different path.
+            if (!string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase))
+                File.Delete(oldPath);
+
+            Logger.Info($"Renamed profile '{oldName}' to '{newName}'");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"Failed to rename profile '{oldName}' to '{newName}'");
+            return false;
+        }
+    }
+
     public static void Export(Profile profile, string destinationPath)
     {
         try

@@ -317,6 +317,11 @@ public partial class MainWindow
         _profileController.CreateProfile();
     }
 
+    private void RenameProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        _profileController.RenameProfile(CmbProfile.SelectedItem?.ToString());
+    }
+
     private void DeleteProfileButton_Click(object sender, RoutedEventArgs e)
     {
         _profileController.DeleteProfile(CmbProfile.SelectedItem?.ToString());

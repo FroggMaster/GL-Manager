@@ -161,6 +161,71 @@ public class ProfileController
         Logger.Info($"DeleteProfile: deleted profile='{profileName}'");
     }
 
+    public void RenameProfile(string? profileName)
+    {
+        Logger.Info($"RenameProfile: attempting to rename profile='{profileName ?? "null"}'");
+
+        if (string.IsNullOrWhiteSpace(profileName) || profileName == "default")
+        {
+            Logger.Warn("RenameProfile: cannot rename the default profile");
+            _notificationManager.ShowToast("Cannot rename the default profile", false);
+            return;
+        }
+
+        var dialog = new CreateProfileDialog(isRename: true, initialName: profileName)
+        {
+            Owner = Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
+        };
+
+        if (dialog.ShowDialog() != true || dialog.Result == null)
+        {
+            Logger.Info("RenameProfile: dialog cancelled");
+            return;
+        }
+
+        var newName = dialog.Result.Name;
+
+        if (string.Equals(newName, profileName, StringComparison.Ordinal))
+        {
+            Logger.Info("RenameProfile: new name matches current name, nothing to do");
+            return;
+        }
+
+        if (_profiles.Contains(newName))
+        {
+            Logger.Warn($"RenameProfile: profile '{newName}' already exists");
+            _notificationManager.ShowToast($"A profile named '{newName}' already exists", false);
+            return;
+        }
+
+        // Flush unsaved game edits to the old file before moving it.
+        if (CurrentProfile != null && string.Equals(CurrentProfile.Name, profileName, StringComparison.Ordinal))
+            SaveCurrentProfile();
+
+        if (!ProfileService.Rename(profileName, newName))
+        {
+            _notificationManager.ShowToast("Failed to rename profile", false);
+            return;
+        }
+
+        if (CurrentProfile != null && string.Equals(CurrentProfile.Name, profileName, StringComparison.Ordinal))
+            CurrentProfile.Name = newName;
+
+        var index = _profiles.IndexOf(profileName);
+        if (index >= 0)
+            _profiles[index] = newName;
+
+        if (Config != null && string.Equals(Config.LastProfile, profileName, StringComparison.Ordinal))
+        {
+            Config.LastProfile = newName;
+            ConfigService.Save(Config);
+        }
+
+        _cmbProfile.SelectedItem = newName;
+        _notificationManager.ShowToast($"Profile renamed to '{newName}'");
+        Logger.Info($"RenameProfile: renamed profile '{profileName}' to '{newName}'");
+    }
+
     public void ImportProfile()
     {
         var dialog = new OpenFileDialog
