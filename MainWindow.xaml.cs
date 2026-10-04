@@ -755,24 +755,35 @@ public partial class MainWindow
                 }
             }
 
-            if (!GreenLumaService.IsAppListGenerated(_config))
+            _profileController.SaveCurrentProfile();
+
+            if (GreenLumaService.IsAppListStale(_config, _profileController.CurrentProfile, out var staleReason))
             {
-                Logger.Warn("No AppList found, prompting user to generate");
-                var generateResult = CustomMessageBox.Show(
-                    "No AppList found. Generate one now?",
-                    "Generate AppList",
+                var profileName = _profileController.CurrentProfile?.Name ?? "(none)";
+                Logger.Warn($"AppList regeneration required before launch: {staleReason}");
+                var regenerate = CustomMessageBox.Show(
+                    $"The GreenLuma app list needs to be regenerated for profile '{profileName}'.\n\n" +
+                    $"{staleReason}\n\nRegenerate it now?",
+                    "Regenerate AppList",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Question);
 
-                if (generateResult == MessageBoxResult.No)
+                if (regenerate != MessageBoxResult.Yes)
                 {
-                    Logger.Info("User declined AppList generation, aborting launch");
+                    Logger.Info("User declined AppList regeneration, aborting launch");
+                    _notificationManager.ShowToast("Launch cancelled. App list was not regenerated.", false);
                     return;
                 }
 
-                Logger.Info("Generating AppList...");
+                Logger.Info("Regenerating AppList before launch...");
                 _profileController.SaveCurrentProfile();
-                await _appListController.GenerateAsync(_config, _profileController.CurrentProfile);
+                var generated = await _appListController.GenerateAsync(_config, _profileController.CurrentProfile);
+                if (generated < 0)
+                {
+                    Logger.Error("AppList regeneration failed, aborting launch");
+                    _notificationManager.ShowToast("Failed to regenerate AppList", false);
+                    return;
+                }
                 await Task.Delay(500);
             }
 

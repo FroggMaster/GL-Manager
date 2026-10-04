@@ -499,6 +499,14 @@ public class AppListController
 
         var result = await GreenLumaService.GenerateAppListAsync(profile, config);
 
+        if (result >= 0)
+        {
+            config.LastAppListProfile = profile.Name;
+            config.LastAppListFingerprint = GreenLumaService.ComputeAppListFingerprint(profile);
+            ConfigService.Save(config);
+            Logger.Info($"GenerateAsync: recorded AppList association for profile='{profile.Name}'");
+        }
+
         Logger.Info($"GenerateAsync: completed with result={result}");
         return result;
     }

@@ -1,5 +1,7 @@
 ﻿using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using GreenLuma_Manager.Dialogs;
 using GreenLuma_Manager.Models;
@@ -560,6 +562,63 @@ public partial class GreenLumaService
         var hasNewFormat = File.Exists(appListIniPath);
 
         return hasOldFormat || hasNewFormat;
+    }
+
+    /// <summary>
+    /// Computes a stable fingerprint of the profile state that determines the
+    /// generated AppList (app ids + depots, plus name/type so any game edit is
+    /// detected). Used to tell whether the current AppList.ini is stale.
+    /// </summary>
+    public static string ComputeAppListFingerprint(Profile? profile)
+    {
+        if (profile == null)
+            return string.Empty;
+
+        var builder = new StringBuilder();
+        foreach (var game in profile.Games)
+        {
+            builder.Append(game.AppId).Append('\u001f');
+            builder.Append(game.Name).Append('\u001f');
+            builder.Append(game.Type).Append('\u001f');
+            builder.Append(string.Join(",", game.Depots)).Append('\u001e');
+        }
+
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return Convert.ToHexString(bytes);
+    }
+
+    /// <summary>
+    /// Returns true when the on-disk AppList.ini cannot be trusted for the given
+    /// profile (missing, generated for another profile, or games changed since).
+    /// </summary>
+    public static bool IsAppListStale(Config? config, Profile? profile, out string reason)
+    {
+        if (config == null || profile == null)
+        {
+            reason = "No profile is selected.";
+            return true;
+        }
+
+        if (!IsAppListGenerated(config))
+        {
+            reason = "No GreenLuma app list has been generated yet.";
+            return true;
+        }
+
+        if (!string.Equals(config.LastAppListProfile, profile.Name, StringComparison.Ordinal))
+        {
+            reason = "The current GreenLuma app list was generated for a different profile.";
+            return true;
+        }
+
+        if (!string.Equals(config.LastAppListFingerprint, ComputeAppListFingerprint(profile), StringComparison.Ordinal))
+        {
+            reason = "The games in the current profile have changed since the app list was generated.";
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
     }
 
     /// <summary>

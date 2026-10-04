@@ -6,7 +6,6 @@ using System.Windows.Input;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
 using GreenLuma_Manager.Utilities;
-using Microsoft.Win32;
 
 namespace GreenLuma_Manager.Dialogs;
 
@@ -97,39 +96,32 @@ public partial class SettingsDialog
         view.Visibility = Visibility.Visible;
     }
 
-    private void BrowseSteam_Click(object sender, RoutedEventArgs e)
+    private async void BrowseSteam_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Select Steam folder"
-        };
+        var initial = PathDetector.IsValidDirectory(TxtSteamPath.Text) ? TxtSteamPath.Text : null;
+        var selected = FolderPicker.Show("Select Steam folder", initial, this);
 
-        if (PathDetector.IsValidDirectory(TxtSteamPath.Text))
-            dialog.InitialDirectory = TxtSteamPath.Text;
-
-        if (dialog.ShowDialog() == true)
+        if (selected != null)
         {
-            Logger.Info($"Steam folder browsed: '{dialog.FolderName}'");
-            TxtSteamPath.Text = dialog.FolderName;
+            Logger.Info($"Steam folder browsed: '{selected}'");
+            TxtSteamPath.Text = selected;
             UpdateGreenLumaPathUI();
             CheckMixedInstallState();
+
+            // The Steam folder itself may be selected as the GreenLuma location.
+            await ClassifyAndHandleSelectedFolderAsync(TxtSteamPath.Text.Trim(), TxtSteamPath.Text.Trim());
         }
     }
 
-    private void BrowseGreenLuma_Click(object sender, RoutedEventArgs e)
+    private async void BrowseGreenLuma_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Select GreenLuma folder"
-        };
+        var initial = PathDetector.IsValidDirectory(TxtGreenLumaPath.Text) ? TxtGreenLumaPath.Text : null;
+        var selected = FolderPicker.Show("Select GreenLuma folder", initial, this);
 
-        if (PathDetector.IsValidDirectory(TxtGreenLumaPath.Text))
-            dialog.InitialDirectory = TxtGreenLumaPath.Text;
-
-        if (dialog.ShowDialog() == true)
+        if (selected != null)
         {
-            Logger.Info($"GreenLuma folder browsed: '{dialog.FolderName}'");
-            TxtGreenLumaPath.Text = dialog.FolderName;
+            Logger.Info($"GreenLuma folder browsed: '{selected}'");
+            TxtGreenLumaPath.Text = selected;
 
             // When the user explicitly browses to a folder, exit display
             // mode so UpdateGreenLumaPathUI doesn't overwrite their choice.
@@ -138,6 +130,135 @@ public partial class SettingsDialog
 
             UpdateGreenLumaPathUI();
             CheckMixedInstallState();
+
+            var steamPath = NormalizePath(TxtSteamPath.Text);
+            await ClassifyAndHandleSelectedFolderAsync(steamPath, selected);
+        }
+    }
+
+    /// <summary>
+    /// Classifies a user-selected GreenLuma folder and routes to the existing setup flows.
+    /// - Steam directory: offer the GreenLuma method (Normal / User32 / User32SF).
+    /// - Distinct directory with an existing StealthAny install: nothing to do.
+    /// - Distinct (possibly empty) directory without GreenLuma: offer to download/deploy StealthAny.
+    /// </summary>
+    private async Task ClassifyAndHandleSelectedFolderAsync(string steamPath, string selectedPath)
+    {
+        var selected = NormalizePath(selectedPath);
+        var steam = NormalizePath(steamPath);
+
+        if (string.IsNullOrWhiteSpace(selected) || !Directory.Exists(selected))
+            return;
+
+        // A) The Steam directory itself was selected as the GreenLuma location.
+        if (!GreenLumaService.PathsAreDistinct(selected, steam))
+        {
+            // Respect an existing explicit mode choice so re-selecting the Steam
+            // folder does not silently override the user's configured method.
+            if (!string.IsNullOrWhiteSpace(_config.PreferredMode))
+                return;
+
+            var hasFiles = GreenLumaService.HasGreenLumaDll(steam)
+                           || File.Exists(Path.Combine(steam, "user32.dll"))
+                           || File.Exists(Path.Combine(steam, "DLLInjector.exe"));
+
+            var choice = CustomMessageBox.Show(
+                hasFiles
+                    ? "GreenLuma files were detected in the Steam directory.\n\nSelect the GreenLuma method to use:"
+                    : "No GreenLuma installation was detected in the Steam directory.\n\nSelect how you want to set up GreenLuma:",
+                "GreenLuma Method",
+                "Normal", "User32", "User32SF (Recommended)");
+
+            // CustomMessageBox returns 0 for both the first button and a
+            // cancelled dialog, so treat a cancel as "no change" only when
+            // the user actually dismissed it.  The dialog's default result
+            // index is 0, so we cannot distinguish cancel from "Normal" here;
+            // the least-invasive choice is to honour the returned index.
+            GreenLumaInstallMethod? forcedMethod;
+            User32DeployMode? user32DeployMode = null;
+
+            switch (choice)
+            {
+                case 0:
+                    forcedMethod = GreenLumaInstallMethod.Normal;
+                    break;
+                case 1:
+                    forcedMethod = GreenLumaInstallMethod.User32;
+                    user32DeployMode = User32DeployMode.User32;
+                    break;
+                case 2:
+                    forcedMethod = GreenLumaInstallMethod.User32;
+                    user32DeployMode = User32DeployMode.User32SF;
+                    break;
+                default:
+                    return;
+            }
+
+            // Sync the mode ComboBox so the UI reflects the choice.
+            _config.PreferredMode = forcedMethod.ToString();
+            LoadGreenLumaModeSelection();
+
+            // Normal/User32 live in the Steam folder: show SteamPath and make
+            // sure Ok_Click saves the right value.
+            TxtGreenLumaPath.Text = steam;
+            _inDisplayMode = false;
+            _userGreenLumaPath = null;
+            UpdateGreenLumaPathUI();
+
+            // Deploy only when there is nothing to preserve, or the user
+            // explicitly chose the User32SF variant.
+            var shouldDeploy = !hasFiles || user32DeployMode == User32DeployMode.User32SF;
+            if (shouldDeploy)
+            {
+                var methodLabel = forcedMethod == GreenLumaInstallMethod.Normal
+                    ? "Normal"
+                    : user32DeployMode == User32DeployMode.User32SF
+                        ? "User32SF"
+                        : "User32";
+
+                var confirm = CustomMessageBox.Show(
+                    $"Download and deploy {methodLabel} now?",
+                    "Install GreenLuma",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (confirm == MessageBoxResult.Yes)
+                {
+                    await DownloadAndDeployGreenLumaAsync(
+                        steam, steam, forcedMethod, user32DeployMode, hasFiles);
+                }
+            }
+
+            return;
+        }
+
+        // B) A directory distinct from Steam.
+        if (GreenLumaService.HasStealthAnyFiles(selected))
+        {
+            // Existing StealthAny install: keep the selected path, no prompt.
+            if (string.IsNullOrWhiteSpace(_config.PreferredMode))
+                _config.PreferredMode = GreenLumaInstallMethod.StealthAny.ToString();
+            _config.LastStealthAnyPath = selected;
+            LoadGreenLumaModeSelection();
+            return;
+        }
+
+        // New/empty directory: offer to set up StealthAny.
+        var deployChoice = CustomMessageBox.Show(
+            $"GreenLuma is not currently installed at:\n{selected}\n\nDownload and deploy GreenLuma (Stealth Any) now?",
+            "GreenLuma Not Installed",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        // Keep the selected path regardless of the answer.
+        _config.PreferredMode = GreenLumaInstallMethod.StealthAny.ToString();
+        _config.LastStealthAnyPath = selected;
+        LoadGreenLumaModeSelection();
+
+        if (deployChoice == MessageBoxResult.Yes)
+        {
+            await DownloadAndDeployGreenLumaAsync(
+                steam, selected, GreenLumaInstallMethod.StealthAny, null, false);
         }
     }
 
@@ -237,9 +358,11 @@ public partial class SettingsDialog
             TxtGreenLumaDesc.Text = "\"The GreenLuma directory is auto-detected. If the detected location changes, this path will be updated after you save your settings.\"";
             TxtGreenLumaPath.ToolTip = null;
 
-            PanelGreenLumaDir.Opacity = GreenLumaService.PathsAreDistinct(_config.GreenLumaPath, steamPath)
-                ? 1.0
-                : 0.45;
+            // No install detected yet: keep the panel fully opaque so the
+            // path is clearly editable/configureable on first launch and
+            // whenever the user needs to set it up.  Do not dim it just
+            // because GreenLuma is not installed.
+            PanelGreenLumaDir.Opacity = 1.0;
 
             LoadGreenLumaModeSelection();
             return;
@@ -579,6 +702,152 @@ public partial class SettingsDialog
 
     private async void DownloadGreenLuma_Click(object sender, RoutedEventArgs e)
     {
+        var steamPath = NormalizePath(_config.SteamPath);
+        var greenLumaPath = NormalizePath(_config.GreenLumaPath);
+        GreenLumaInstallMethod? forcedMethod = null;
+        User32DeployMode? user32DeployMode = null;
+        var hadExistingInstall = false;
+
+        // Check if an existing installation is detected
+        var installMethod = GreenLumaService.DetectInstallMethod(
+            steamPath, greenLumaPath, _config.PreferredMode);
+
+        if (installMethod != GreenLumaInstallMethod.None)
+        {
+            hadExistingInstall = true;
+
+            // Existing install detected — ask if user wants to update it
+            var updateChoice = CustomMessageBox.Show(
+                "Existing installation detected.\n\n" +
+                "Update and deploy to the current installation?",
+                "Installation Detected",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (updateChoice != MessageBoxResult.Yes)
+            {
+                // User chose to pick a different install method instead
+                installMethod = GreenLumaInstallMethod.None;
+            }
+        }
+
+        if (installMethod == GreenLumaInstallMethod.None)
+        {
+            // No install detected (or user declined to update) —
+            // prompt user to choose a deployment method
+            var choice = CustomMessageBox.Show(
+                hadExistingInstall
+                    ? "Choose how you want to deploy:"
+                    : "No GreenLuma installation detected.\n\nChoose how you want to deploy:",
+                "Install GreenLuma",
+                "Normal", "User32", "StealthAny");
+
+            switch (choice)
+            {
+                case 0: // Normal
+                    if (string.IsNullOrWhiteSpace(steamPath) ||
+                        !File.Exists(Path.Combine(steamPath, "Steam.exe")))
+                    {
+                        CustomMessageBox.Show(
+                            "Steam path is not set or invalid.\nPlease configure a valid Steam path in Settings first.",
+                            "Validation",
+                            icon: MessageBoxImage.Exclamation);
+                        return;
+                    }
+                    greenLumaPath = steamPath;
+                    forcedMethod = GreenLumaInstallMethod.Normal;
+                    break;
+
+                case 1: // User32
+                    if (string.IsNullOrWhiteSpace(steamPath) ||
+                        !File.Exists(Path.Combine(steamPath, "Steam.exe")))
+                    {
+                        CustomMessageBox.Show(
+                            "Steam path is not set or invalid.\nPlease configure a valid Steam path in Settings first.",
+                            "Validation",
+                            icon: MessageBoxImage.Exclamation);
+                        return;
+                    }
+
+                    // Ask user which User32 variant to deploy
+                    var user32Choice = CustomMessageBox.Show(
+                        "Choose the User32 deployment variant:\n\n" +
+                        "User32 — deploys user32.dll directly from the archive.\n" +
+                        "User32SF (Recommended) — deploys user32SF.dll renamed to user32.dll.",
+                        "User32 Deployment",
+                        "User32", "User32SF (Recommended)");
+
+                    user32DeployMode = user32Choice == 1
+                        ? User32DeployMode.User32SF
+                        : User32DeployMode.User32;
+
+                    greenLumaPath = steamPath;
+                    forcedMethod = GreenLumaInstallMethod.User32;
+                    break;
+
+                case 2: // StealthAny
+                    var selectedFolder = FolderPicker.Show(
+                        "Select GreenLuma installation folder", null, this);
+                    if (selectedFolder == null)
+                        return; // User cancelled
+
+                    greenLumaPath = selectedFolder;
+                    _config.LastStealthAnyPath = greenLumaPath;
+                    forcedMethod = GreenLumaInstallMethod.StealthAny;
+                    break;
+            }
+
+            // Sync both the config AND the UI text box so Ok_Click's
+            // validation (which reads from the text box) sees the new path.
+            _config.PreferredMode = forcedMethod.ToString();
+            TxtGreenLumaPath.Text = greenLumaPath;
+
+            // Reset display-mode tracking so UpdateGreenLumaPathUI
+            // starts fresh — it will set _inDisplayMode / _userGreenLumaPath
+            // correctly based on the chosen mode.
+            _inDisplayMode = false;
+            _userGreenLumaPath = null;
+            UpdateGreenLumaPathUI();
+            LoadGreenLumaModeSelection();
+        }
+
+        // Validate target path — for Normal/User32 mode the GL path should
+        // fall back to the Steam directory when the config field is empty.
+        if (!PathDetector.IsValidDirectory(greenLumaPath))
+        {
+            if (PathDetector.IsValidDirectory(steamPath) &&
+                (installMethod == GreenLumaInstallMethod.Normal ||
+                 installMethod == GreenLumaInstallMethod.User32))
+            {
+                greenLumaPath = steamPath;
+            }
+            else
+            {
+                CustomMessageBox.Show(
+                    "Target directory does not exist or is invalid:\n" + greenLumaPath,
+                    "Download Error",
+                    icon: MessageBoxImage.Exclamation);
+                return;
+            }
+        }
+
+        await DownloadAndDeployGreenLumaAsync(
+            steamPath, greenLumaPath, forcedMethod, user32DeployMode, hadExistingInstall);
+    }
+
+    /// <summary>
+    /// Shared download + deploy flow used by both the Download button and the
+    /// folder-selection prompts.  Handles the credential check, progress UI,
+    /// version check, download and deployment, and always resets the progress
+    /// UI.  Returns true on success, false on failure or cancel.
+    /// </summary>
+    private async Task<bool> DownloadAndDeployGreenLumaAsync(
+        string steamPath,
+        string greenLumaPath,
+        GreenLumaInstallMethod? forcedMethod,
+        User32DeployMode? user32DeployMode,
+        bool hadExistingInstall)
+    {
         BtnDownloadGreenLuma.IsEnabled = false;
         PnlDownloadProgress.Visibility = Visibility.Visible;
 
@@ -610,138 +879,7 @@ public partial class SettingsDialog
                     "Please enter your cs.rin.ru username and password in Settings first.",
                     "Credentials Required",
                     icon: MessageBoxImage.Exclamation);
-                return;
-            }
-
-            var steamPath = NormalizePath(_config.SteamPath);
-            var greenLumaPath = NormalizePath(_config.GreenLumaPath);
-            GreenLumaInstallMethod? forcedMethod = null;
-            User32DeployMode? user32DeployMode = null;
-            var hadExistingInstall = false;
-
-            // Check if an existing installation is detected
-            var installMethod = GreenLumaService.DetectInstallMethod(
-                steamPath, greenLumaPath, _config.PreferredMode);
-
-            if (installMethod != GreenLumaInstallMethod.None)
-            {
-                hadExistingInstall = true;
-
-                // Existing install detected — ask if user wants to update it
-                var updateChoice = CustomMessageBox.Show(
-                    "Existing installation detected.\n\n" +
-                    "Update and deploy to the current installation?",
-                    "Installation Detected",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
-
-                if (updateChoice != MessageBoxResult.Yes)
-                {
-                    // User chose to pick a different install method instead
-                    installMethod = GreenLumaInstallMethod.None;
-                }
-            }
-
-            if (installMethod == GreenLumaInstallMethod.None)
-            {
-                // No install detected (or user declined to update) —
-                // prompt user to choose a deployment method
-                var choice = CustomMessageBox.Show(
-                    hadExistingInstall
-                        ? "Choose how you want to deploy:"
-                        : "No GreenLuma installation detected.\n\nChoose how you want to deploy:",
-                    "Install GreenLuma",
-                    "Normal", "User32", "StealthAny");
-
-                switch (choice)
-                {
-                    case 0: // Normal
-                        if (string.IsNullOrWhiteSpace(steamPath) ||
-                            !File.Exists(Path.Combine(steamPath, "Steam.exe")))
-                        {
-                            CustomMessageBox.Show(
-                                "Steam path is not set or invalid.\nPlease configure a valid Steam path in Settings first.",
-                                "Validation",
-                                icon: MessageBoxImage.Exclamation);
-                            return;
-                        }
-                        greenLumaPath = steamPath;
-                        forcedMethod = GreenLumaInstallMethod.Normal;
-                        break;
-
-                    case 1: // User32
-                        if (string.IsNullOrWhiteSpace(steamPath) ||
-                            !File.Exists(Path.Combine(steamPath, "Steam.exe")))
-                        {
-                            CustomMessageBox.Show(
-                                "Steam path is not set or invalid.\nPlease configure a valid Steam path in Settings first.",
-                                "Validation",
-                                icon: MessageBoxImage.Exclamation);
-                            return;
-                        }
-
-                        // Ask user which User32 variant to deploy
-                        var user32Choice = CustomMessageBox.Show(
-                            "Choose the User32 deployment variant:\n\n" +
-                            "User32 — deploys user32.dll directly from the archive.\n" +
-                            "User32SF (Recommended) — deploys user32SF.dll renamed to user32.dll.",
-                            "User32 Deployment",
-                            "User32", "User32SF (Recommended)");
-
-                        user32DeployMode = user32Choice == 1
-                            ? User32DeployMode.User32SF
-                            : User32DeployMode.User32;
-
-                        greenLumaPath = steamPath;
-                        forcedMethod = GreenLumaInstallMethod.User32;
-                        break;
-
-                    case 2: // StealthAny
-                        var folderDialog = new OpenFolderDialog
-                        {
-                            Title = "Select GreenLuma installation folder"
-                        };
-                        if (folderDialog.ShowDialog() != true)
-                            return; // User cancelled
-
-                        greenLumaPath = folderDialog.FolderName;
-                        _config.LastStealthAnyPath = greenLumaPath;
-                        forcedMethod = GreenLumaInstallMethod.StealthAny;
-                        break;
-                }
-
-                // Sync both the config AND the UI text box so Ok_Click's
-                // validation (which reads from the text box) sees the new path.
-                _config.PreferredMode = forcedMethod.ToString();
-                TxtGreenLumaPath.Text = greenLumaPath;
-
-                // Reset display-mode tracking so UpdateGreenLumaPathUI
-                // starts fresh — it will set _inDisplayMode / _userGreenLumaPath
-                // correctly based on the chosen mode.
-                _inDisplayMode = false;
-                _userGreenLumaPath = null;
-                UpdateGreenLumaPathUI();
-                LoadGreenLumaModeSelection();
-            }
-
-            // Validate target path — for Normal/User32 mode the GL path should
-            // fall back to the Steam directory when the config field is empty.
-            if (!PathDetector.IsValidDirectory(greenLumaPath))
-            {
-                if (PathDetector.IsValidDirectory(steamPath) &&
-                    (installMethod == GreenLumaInstallMethod.Normal ||
-                     installMethod == GreenLumaInstallMethod.User32))
-                {
-                    greenLumaPath = steamPath;
-                }
-                else
-                {
-                    CustomMessageBox.Show(
-                        "Target directory does not exist or is invalid:\n" + greenLumaPath,
-                        "Download Error",
-                        icon: MessageBoxImage.Exclamation);
-                    return;
-                }
+                return false;
             }
 
             // ── Phase 1: Version check (0% → 10%) ─────────────────
@@ -771,7 +909,7 @@ public partial class SettingsDialog
                     MessageBoxImage.Asterisk);
 
                 if (confirm != MessageBoxResult.Yes)
-                    return;
+                    return false;
             }
             else if (versionInfo == null || !versionInfo.CheckSucceeded)
             {
@@ -834,22 +972,21 @@ public partial class SettingsDialog
                         summary += "\n  • user32.dll (Steam folder)";
 
                     CustomMessageBox.Show(summary, "Update Complete", icon: MessageBoxImage.Asterisk);
+                    return true;
                 }
-                else
-                {
-                    CustomMessageBox.Show(
-                        $"Download succeeded but deployment failed:\n{deployResult.ErrorMessage}",
-                        "Deployment Error",
-                        icon: MessageBoxImage.Exclamation);
-                }
-            }
-            else
-            {
+
                 CustomMessageBox.Show(
-                    $"Download failed: {result.ErrorMessage}",
-                    "Download Error",
+                    $"Download succeeded but deployment failed:\n{deployResult.ErrorMessage}",
+                    "Deployment Error",
                     icon: MessageBoxImage.Exclamation);
+                return false;
             }
+
+            CustomMessageBox.Show(
+                $"Download failed: {result.ErrorMessage}",
+                "Download Error",
+                icon: MessageBoxImage.Exclamation);
+            return false;
         }
         catch (Exception ex)
         {
@@ -857,6 +994,7 @@ public partial class SettingsDialog
                 $"Download error: {ex.Message}",
                 "Download Error",
                 icon: MessageBoxImage.Exclamation);
+            return false;
         }
         finally
         {
@@ -981,18 +1119,11 @@ public partial class SettingsDialog
             return false;
         }
 
-        var method = GreenLumaService.DetectInstallMethod(steamPath, greenLumaPath);
-        if (method == GreenLumaInstallMethod.None)
-        {
-            CustomMessageBox.Show(
-                "No GreenLuma installation detected at the specified path.\n\n" +
-                "Ensure the folder contains GreenLuma DLL and DLLInjector.exe, " +
-                "or place user32.dll in the Steam directory for User32 mode.",
-                "Detection",
-                icon: MessageBoxImage.Exclamation);
-            return false;
-        }
-
+        // A directory that exists and is distinct from the Steam directory is
+        // a valid StealthAny target even if it is empty / not yet installed.
+        // Only genuinely invalid paths fail above (null/empty, non-existent,
+        // read-only, or a Steam dir without any install when a separate path
+        // is required).
         return true;
     }
 
