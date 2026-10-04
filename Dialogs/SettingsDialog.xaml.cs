@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -875,10 +876,24 @@ public partial class SettingsDialog
 
             if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             {
-                CustomMessageBox.Show(
-                    "Please enter your cs.rin.ru username and password in Settings first.",
-                    "Credentials Required",
-                    icon: MessageBoxImage.Exclamation);
+                var createAccount = CustomMessageBox.Show(
+                    "Downloading GreenLuma requires a free CS.RIN.RU account.\n\n" +
+                    "You have not entered your cs.rin.ru username and password yet.\n\n" +
+                    "Create a CS.RIN.RU account now?",
+                    "CS.RIN.RU Account Required",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (createAccount == MessageBoxResult.Yes)
+                {
+                    OpenCsRinRegistrationPage();
+                    CustomMessageBox.Show(
+                        "Opening the CS.RIN.RU registration page in your default browser.\n\n" +
+                        "After registering, enter your username and password in Settings, then try again.",
+                        "CS.RIN.RU Registration",
+                        icon: MessageBoxImage.Asterisk);
+                }
+
                 return false;
             }
 
@@ -1002,6 +1017,28 @@ public partial class SettingsDialog
             PnlDownloadProgress.Visibility = Visibility.Collapsed;
             DownloadProgressBar.Value = 0;
             TxtDownloadStatus.Text = "Starting...";
+        }
+    }
+
+    /// <summary>
+    /// Opens the CS.RIN.RU account registration page in the user's default browser.
+    /// </summary>
+    private static void OpenCsRinRegistrationPage()
+    {
+        const string registrationUrl = "https://cs.rin.ru/forum/ucp.php?mode=register";
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(registrationUrl) { UseShellExecute = true });
+            Logger.Info($"Opened CS.RIN.RU registration page: {registrationUrl}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to open the CS.RIN.RU registration page");
+            CustomMessageBox.Show(
+                "Could not open your browser. Please create an account at:\n" + registrationUrl,
+                "Open Registration Page",
+                icon: MessageBoxImage.Exclamation);
         }
     }
 
