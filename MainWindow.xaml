@@ -2156,6 +2156,48 @@
                                                                 </Style>
                                                             </Button.Style>
                                                         </Button>
+
+                                                        <Border
+                                                            x:Name="HighlightOverlay"
+                                                            Grid.ColumnSpan="3"
+                                                            Background="{StaticResource Accent}"
+                                                            CornerRadius="8"
+                                                            IsHitTestVisible="False">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Opacity" Value="0" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
+                                                                            <DataTrigger.EnterActions>
+                                                                                <BeginStoryboard>
+                                                                                    <Storyboard>
+                                                                                        <DoubleAnimation
+                                                                                            Storyboard.TargetProperty="Opacity"
+                                                                                            From="0"
+                                                                                            To="0.30"
+                                                                                            Duration="0:0:0.25">
+                                                                                            <DoubleAnimation.EasingFunction>
+                                                                                                <QuadraticEase EasingMode="EaseOut" />
+                                                                                            </DoubleAnimation.EasingFunction>
+                                                                                        </DoubleAnimation>
+                                                                                        <DoubleAnimation
+                                                                                            BeginTime="0:0:0.25"
+                                                                                            Storyboard.TargetProperty="Opacity"
+                                                                                            From="0.30"
+                                                                                            To="0"
+                                                                                            Duration="0:0:1.05">
+                                                                                            <DoubleAnimation.EasingFunction>
+                                                                                                <QuadraticEase EasingMode="EaseIn" />
+                                                                                            </DoubleAnimation.EasingFunction>
+                                                                                        </DoubleAnimation>
+                                                                                    </Storyboard>
+                                                                                </BeginStoryboard>
+                                                                            </DataTrigger.EnterActions>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                        </Border>
                                                     </Grid>
                                                 </Border>
                                             </DataTemplate>

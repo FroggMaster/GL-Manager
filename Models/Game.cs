@@ -70,6 +70,20 @@ public class Game : INotifyPropertyChanged
         }
     }
 
+    [IgnoreDataMember]
+    public bool IsHighlighted
+    {
+        get;
+        set
+        {
+            if (field != value)
+            {
+                field = value;
+                OnPropertyChanged(nameof(IsHighlighted));
+            }
+        }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     protected void OnPropertyChanged(string propertyName)

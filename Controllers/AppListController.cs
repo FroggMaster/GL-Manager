@@ -453,9 +453,13 @@ public class AppListController
             Total = 1
         });
 
+        var addedGames = new List<Game>();
         foreach (var game in newGames)
             if (!profile.Games.Any(g => g.AppId == game.AppId))
+            {
                 profile.Games.Add(game);
+                addedGames.Add(game);
+            }
 
         Logger.Info($"Adding {newGames.Count} games to profile '{profile.Name}' (pre-existing: {profile.Games.Count})");
 
@@ -464,7 +468,7 @@ public class AppListController
         if (_profileController.CurrentProfile?.Name == "default" ||
             profile.Name == _profileController.CurrentProfile?.Name)
         {
-            _gameListController.LoadGames(profile.Games);
+            _gameListController.LoadGames(profile.Games, addedGames);
             Logger.Info($"Profile '{profile.Name}' loaded into UI: {_gameListController.Games.Count} games displayed");
         }
         else
