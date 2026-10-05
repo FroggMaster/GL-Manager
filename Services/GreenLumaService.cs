@@ -1175,6 +1175,7 @@ public partial class GreenLumaService
             var lines = File.ReadAllLines(iniPath).ToList();
             var dllValue = ExtractDllValue(lines);
             var settings = BuildInjectorSettings(config, dllValue);
+            ApplyBootImageSetting(settings, lines, basePath);
             var updatedLines = ApplySettings(lines, settings);
 
             File.WriteAllLines(iniPath, updatedLines);
@@ -1219,6 +1220,152 @@ public partial class GreenLumaService
         catch
         {
             // ignored
+        }
+
+        return null;
+    }
+
+    private static readonly string[] BootImageExtensions =
+        [".bmp", ".png", ".jpg", ".jpeg", ".jfif", ".gif", ".webp", ".tif", ".tiff"];
+
+    /// <summary>
+    /// Normalizes the DLLInjector.ini BootImage value so it points at a real
+    /// image. It honors the file already named by the config when that file
+    /// exists, then falls back to any "BootImage*.<image type>" file found either
+    /// next to DLLInjector.exe or inside the GreenLumaYYYY_Files folder. The
+    /// written value is the bare file name when the image sits next to
+    /// DLLInjector.exe, or "GreenLumaYYYY_Files\file name" when it sits in that
+    /// folder. When no image is found the key is cleared. A missing key is left
+    /// untouched.
+    /// </summary>
+    private static void ApplyBootImageSetting(Dictionary<string, string> settings, List<string> lines, string basePath)
+    {
+        var current = ExtractBootImageValue(lines);
+        if (current == null)
+            return;
+
+        var resolved = ResolveBootImageValue(basePath, current);
+        settings["BootImage"] = resolved.Length == 0 ? "" : " " + resolved;
+    }
+
+    private static string ResolveBootImageValue(string basePath, string current)
+    {
+        // 1. Honor the file the config already names when it exists.
+        var named = NormalizeNamedBootImage(basePath, current);
+        if (named != null)
+            return named;
+
+        // 2. Otherwise use any BootImage* image in either known location.
+        var besideInjector = FindBootImageFile(basePath);
+        if (besideInjector != null)
+            return besideInjector;
+
+        if (Directory.Exists(basePath))
+        {
+            foreach (var filesDir in Directory.GetDirectories(basePath, "GreenLuma*_Files"))
+            {
+                var inFolder = FindBootImageFile(filesDir);
+                if (inFolder != null)
+                    return Path.Combine(Path.GetFileName(filesDir), inFolder);
+            }
+        }
+
+        // 3. No image: clear the key.
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Returns the normalized path for the file named by the config when it
+    /// exists in one of the known locations, otherwise null.
+    /// </summary>
+    private static string? NormalizeNamedBootImage(string basePath, string current)
+    {
+        try
+        {
+            var candidate = current.Trim().Trim('"');
+            if (candidate.Length == 0)
+                return null;
+
+            var literal = Path.IsPathRooted(candidate)
+                ? candidate
+                : Path.Combine(basePath, candidate);
+            if (File.Exists(literal))
+                return candidate;
+
+            var fileName = Path.GetFileName(candidate);
+            if (string.IsNullOrWhiteSpace(fileName))
+                return null;
+
+            if (File.Exists(Path.Combine(basePath, fileName)))
+                return fileName;
+
+            if (Directory.Exists(basePath))
+            {
+                foreach (var filesDir in Directory.GetDirectories(basePath, "GreenLuma*_Files"))
+                {
+                    if (File.Exists(Path.Combine(filesDir, fileName)))
+                        return Path.Combine(Path.GetFileName(filesDir), fileName);
+                }
+            }
+        }
+        catch
+        {
+            // Invalid path characters or an inaccessible path: fall through to
+            // the discovery step.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the first "BootImage*" image (by common image extension) directly
+    /// inside the given directory, or null when none exists.
+    /// </summary>
+    private static string? FindBootImageFile(string directory)
+    {
+        try
+        {
+            if (!Directory.Exists(directory))
+                return null;
+
+            var names = Directory.EnumerateFiles(directory)
+                .Select(path => Path.GetFileName(path) ?? string.Empty)
+                .Where(name => name.Length > 0)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var name in names)
+            {
+                if (!name.StartsWith("BootImage", StringComparison.OrdinalIgnoreCase) &&
+                    !name.StartsWith("BootImg", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var extension = Path.GetExtension(name);
+                if (BootImageExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+                    return name;
+            }
+        }
+        catch
+        {
+            // Unreadable directory: treat as no image.
+        }
+
+        return null;
+    }
+
+    private static string? ExtractBootImageValue(List<string> lines)
+    {
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+
+            if (trimmed.Length == 0 || trimmed[0] == '#' || !trimmed.Contains('='))
+                continue;
+
+            var equalsIndex = trimmed.IndexOf('=');
+            var key = trimmed[..equalsIndex].Trim();
+
+            if (string.Equals(key, "BootImage", StringComparison.OrdinalIgnoreCase))
+                return trimmed[(equalsIndex + 1)..].Trim();
         }
 
         return null;
