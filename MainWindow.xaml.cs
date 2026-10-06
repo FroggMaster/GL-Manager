@@ -45,6 +45,7 @@ public partial class MainWindow
     private readonly GameListController _gameListController;
     private readonly AppListController _appListController;
     private readonly GreenLumaLauncher _launcher;
+    private readonly BootImageController _bootImageController;
     private readonly NotificationManager _notificationManager;
 
     // UI state
@@ -83,8 +84,10 @@ public partial class MainWindow
             StatusIndicator, TxtStatus, TxtGameCount,
             TxtLoadingDots);
 
-        // Create launcher (no deps)
+        // Create launcher and boot image splash (no deps)
         _launcher = new GreenLumaLauncher();
+        _bootImageController = new BootImageController();
+        _launcher.InjectorLaunched += OnInjectorLaunched;
 
         // Create game list controller (depends on NotificationManager)
         _gameListController = new GameListController(LstGames, TxtGameCount, PnlEmptyGames, _notificationManager);
@@ -791,15 +794,22 @@ public partial class MainWindow
 
             _notificationManager.ShowToast("Restarting Steam. This can take about a minute, please wait…");
 
-            if (_launcher.ValidatePaths(_config) && await _launcher.LaunchAsync(_config))
+            try
             {
-                Logger.Info("Launch completed successfully");
-                _notificationManager.ShowToast("GreenLuma injected successfully");
+                if (_launcher.ValidatePaths(_config) && await _launcher.LaunchAsync(_config))
+                {
+                    Logger.Info("Launch completed successfully");
+                    _notificationManager.ShowToast("GreenLuma injected successfully");
+                }
+                else
+                {
+                    Logger.Error("Launch failed");
+                    _notificationManager.ShowToast("GreenLuma injection failed", false);
+                }
             }
-            else
+            finally
             {
-                Logger.Error("Launch failed");
-                _notificationManager.ShowToast("GreenLuma injection failed", false);
+                _bootImageController.Hide();
             }
         }
         catch (Exception ex)
@@ -811,6 +821,19 @@ public partial class MainWindow
             _launchInProgress = false;
             BtnLaunchGreenluma.IsEnabled = true;
         }
+    }
+
+    /// <summary>
+    /// Shows the boot image once the injector has been started. Raised from the
+    /// launcher's background thread, so it is marshalled to the UI thread.
+    /// </summary>
+    private void OnInjectorLaunched()
+    {
+        var config = _config;
+        if (config == null)
+            return;
+
+        Dispatcher.BeginInvoke(new Action(() => _bootImageController.Show(config)));
     }
 
     // ─── Settings & Status ────────────────────────────────────────────

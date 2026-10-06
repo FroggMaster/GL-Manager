@@ -39,6 +39,9 @@
 
   <ItemGroup>
     <Resource Include="icon.ico" />
+    <EmbeddedResource Include="Resources\BootImage_GLManager.png">
+      <LogicalName>GreenLuma_Manager.Resources.BootImage_GLManager.png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

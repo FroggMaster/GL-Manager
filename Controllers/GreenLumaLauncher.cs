@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Threading;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
 
@@ -8,6 +7,13 @@ namespace GreenLuma_Manager.Controllers;
 
 public class GreenLumaLauncher
 {
+    /// <summary>
+    /// Raised on a background thread right after the injector has been started,
+    /// so the UI can show the boot image at that point rather than while Steam is
+    /// still shutting down.
+    /// </summary>
+    public event Action? InjectorLaunched;
+
     public bool ValidatePaths(Config config)
     {
         var method = GreenLumaService.DetectInstallMethod(
@@ -140,6 +146,9 @@ public class GreenLumaLauncher
                             LaunchDiagnostics.Line($"Launch attempt {attempt} failed — method: {method}");
                             continue;
                         }
+
+                        if (method is GreenLumaInstallMethod.Normal or GreenLumaInstallMethod.StealthAny)
+                            InjectorLaunched?.Invoke();
 
                         Logger.Info($"Launch initiated (attempt {attempt}) — method: {method}, watching Steam lifecycle...");
                     }
