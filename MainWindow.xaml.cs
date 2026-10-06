@@ -50,6 +50,7 @@ public partial class MainWindow
 
     // UI state
     private bool _launchInProgress;
+    private bool _launchCancelRequested;
     private readonly ObservableCollection<string> _profiles;
     private Config? _config;
     private CancellationTokenSource? _profileLoadCts;
@@ -688,12 +689,14 @@ public partial class MainWindow
     {
         if (_launchInProgress)
         {
-            Logger.Warn("Launch already in progress; ignoring duplicate request");
+            // A launch is running, so the button is showing its cancel state.
+            RequestLaunchCancel();
             return;
         }
 
         _launchInProgress = true;
-        BtnLaunchGreenluma.IsEnabled = false;
+        _launchCancelRequested = false;
+        SetLaunchButtonState(cancelling: true);
 
         try
         {
@@ -792,6 +795,13 @@ public partial class MainWindow
 
             _profileController.SaveCurrentProfile();
 
+            if (_launchCancelRequested)
+            {
+                Logger.Info("Launch cancelled before starting (cancel requested during preparation)");
+                _notificationManager.ShowToast("GreenLuma launch cancelled", false);
+                return;
+            }
+
             _notificationManager.ShowToast("Restarting Steam. This can take about a minute, please wait…");
 
             try
@@ -819,8 +829,50 @@ public partial class MainWindow
         finally
         {
             _launchInProgress = false;
-            BtnLaunchGreenluma.IsEnabled = true;
+            SetLaunchButtonState(cancelling: false);
         }
+    }
+
+    /// <summary>
+    /// Requests cancellation of the in-progress launch and switches the launch
+    /// button into its red cancel state. Repeated clicks are ignored until the
+    /// running launch completes and restores the idle state.
+    /// </summary>
+    private void RequestLaunchCancel()
+    {
+        if (_launchCancelRequested)
+            return;
+
+        _launchCancelRequested = true;
+        Logger.Info("User requested cancellation of the in-progress launch");
+        _notificationManager.ShowToast("Cancelling GreenLuma launch…");
+        _launcher.Cancel();
+    }
+
+    /// <summary>
+    /// Toggles the launch button between its normal "Launch GreenLuma" appearance
+    /// and the red "Cancel Launching GreenLuma" state shown while a launch runs.
+    /// </summary>
+    private void SetLaunchButtonState(bool cancelling)
+    {
+        if (cancelling)
+        {
+            BtnLaunchGreenluma.Style = (Style)FindResource("DangerButton");
+            BtnLaunchGreenluma.Foreground = (SolidColorBrush)FindResource("Text");
+            LblLaunchGreenluma.Text = "CANCEL LAUNCHING GREENLUMA";
+            IcoLaunchGreenluma.Fill = (SolidColorBrush)FindResource("Text");
+            IcoLaunchGreenluma.Data = Geometry.Parse("M6 6h12v12H6z");
+        }
+        else
+        {
+            BtnLaunchGreenluma.Style = (Style)FindResource("PrimaryButton");
+            BtnLaunchGreenluma.Foreground = (SolidColorBrush)FindResource("BackgroundDark");
+            LblLaunchGreenluma.Text = "LAUNCH GREENLUMA";
+            IcoLaunchGreenluma.Fill = (SolidColorBrush)FindResource("BackgroundDark");
+            IcoLaunchGreenluma.Data = Geometry.Parse("M8 5v14l11-7z");
+        }
+
+        BtnLaunchGreenluma.IsEnabled = true;
     }
 
     /// <summary>

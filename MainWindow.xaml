@@ -658,6 +658,14 @@
                 <Setter Property="Height" Value="54" />
             </Style>
 
+            <Style
+                x:Key="DangerButton"
+                BasedOn="{StaticResource PrimaryButton}"
+                TargetType="Button">
+                <Setter Property="Background" Value="{StaticResource Danger}" />
+                <Setter Property="Foreground" Value="{StaticResource Text}" />
+            </Style>
+
             <Style x:Key="HeaderButton" TargetType="Button">
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
@@ -2365,6 +2373,7 @@
                             Style="{StaticResource PrimaryButton}">
                             <StackPanel Orientation="Horizontal">
                                 <Path
+                                    x:Name="IcoLaunchGreenluma"
                                     Width="18"
                                     Height="18"
                                     Margin="0,0,10,0"
@@ -2372,6 +2381,7 @@
                                     Fill="{StaticResource BackgroundDark}"
                                     Stretch="Uniform" />
                                 <TextBlock
+                                    x:Name="LblLaunchGreenluma"
                                     VerticalAlignment="Center"
                                     FontWeight="SemiBold"
                                     Text="LAUNCH GREENLUMA" />

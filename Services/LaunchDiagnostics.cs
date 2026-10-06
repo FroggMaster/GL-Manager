@@ -174,7 +174,8 @@ internal static class LaunchDiagnostics
     /// </summary>
     public static bool WatchSteam(TimeSpan appearTimeout, TimeSpan absenceTolerance,
         TimeSpan stabilityDuration, TimeSpan overallBudget,
-        string? steamPath = null, string? greenLumaPath = null)
+        string? steamPath = null, string? greenLumaPath = null,
+        CancellationToken cancellationToken = default)
     {
         Section("Steam lifecycle watch");
         var startedAt = DateTime.UtcNow;
@@ -186,6 +187,13 @@ internal static class LaunchDiagnostics
         var appearDeadline = startedAt + appearTimeout;
         while (DateTime.UtcNow < appearDeadline)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Line("Launch cancelled by user while waiting for steam.exe to appear");
+                ReleaseHandles(tracked);
+                return false;
+            }
+
             SampleSteam(tracked, out var anyAlive);
             if (anyAlive)
             {
@@ -215,6 +223,15 @@ internal static class LaunchDiagnostics
 
         while (DateTime.UtcNow < budgetDeadline)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Line("Launch cancelled by user during Steam lifecycle watch");
+                LogInjectorArtifacts(steamPath, greenLumaPath);
+                LogSteamLogs(steamPath);
+                ReleaseHandles(tracked);
+                return false;
+            }
+
             SampleSteam(tracked, out var anyAlive);
 
             if (anyAlive)
