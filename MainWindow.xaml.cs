@@ -45,10 +45,12 @@ public partial class MainWindow
     private readonly GameListController _gameListController;
     private readonly AppListController _appListController;
     private readonly GreenLumaLauncher _launcher;
+    private readonly BootImageController _bootImageController;
     private readonly NotificationManager _notificationManager;
 
     // UI state
     private bool _launchInProgress;
+    private bool _launchCancelRequested;
     private readonly ObservableCollection<string> _profiles;
     private Config? _config;
     private CancellationTokenSource? _profileLoadCts;
@@ -83,8 +85,10 @@ public partial class MainWindow
             StatusIndicator, TxtStatus, TxtGameCount,
             TxtLoadingDots);
 
-        // Create launcher (no deps)
+        // Create launcher and boot image splash (no deps)
         _launcher = new GreenLumaLauncher();
+        _bootImageController = new BootImageController();
+        _launcher.InjectorLaunched += OnInjectorLaunched;
 
         // Create game list controller (depends on NotificationManager)
         _gameListController = new GameListController(LstGames, TxtGameCount, PnlEmptyGames, _notificationManager);
@@ -315,6 +319,11 @@ public partial class MainWindow
     private void CreateProfileButton_Click(object sender, RoutedEventArgs e)
     {
         _profileController.CreateProfile();
+    }
+
+    private void RenameProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        _profileController.RenameProfile(CmbProfile.SelectedItem?.ToString());
     }
 
     private void DeleteProfileButton_Click(object sender, RoutedEventArgs e)
@@ -680,12 +689,14 @@ public partial class MainWindow
     {
         if (_launchInProgress)
         {
-            Logger.Warn("Launch already in progress; ignoring duplicate request");
+            // A launch is running, so the button is showing its cancel state.
+            RequestLaunchCancel();
             return;
         }
 
         _launchInProgress = true;
-        BtnLaunchGreenluma.IsEnabled = false;
+        _launchCancelRequested = false;
+        SetLaunchButtonState(cancelling: true);
 
         try
         {
@@ -750,40 +761,65 @@ public partial class MainWindow
                 }
             }
 
-            if (!GreenLumaService.IsAppListGenerated(_config))
+            _profileController.SaveCurrentProfile();
+
+            if (GreenLumaService.IsAppListStale(_config, _profileController.CurrentProfile, out var staleReason))
             {
-                Logger.Warn("No AppList found, prompting user to generate");
-                var generateResult = CustomMessageBox.Show(
-                    "No AppList found. Generate one now?",
-                    "Generate AppList",
+                var profileName = _profileController.CurrentProfile?.Name ?? "(none)";
+                Logger.Warn($"AppList regeneration required before launch: {staleReason}");
+                var regenerate = CustomMessageBox.Show(
+                    $"The GreenLuma app list needs to be regenerated for profile '{profileName}'.\n\n" +
+                    $"{staleReason}\n\nRegenerate it now?",
+                    "Regenerate AppList",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Question);
 
-                if (generateResult == MessageBoxResult.No)
+                if (regenerate != MessageBoxResult.Yes)
                 {
-                    Logger.Info("User declined AppList generation, aborting launch");
+                    Logger.Info("User declined AppList regeneration, aborting launch");
+                    _notificationManager.ShowToast("Launch cancelled. App list was not regenerated.", false);
                     return;
                 }
 
-                Logger.Info("Generating AppList...");
+                Logger.Info("Regenerating AppList before launch...");
                 _profileController.SaveCurrentProfile();
-                await _appListController.GenerateAsync(_config, _profileController.CurrentProfile);
+                var generated = await _appListController.GenerateAsync(_config, _profileController.CurrentProfile);
+                if (generated < 0)
+                {
+                    Logger.Error("AppList regeneration failed, aborting launch");
+                    _notificationManager.ShowToast("Failed to regenerate AppList", false);
+                    return;
+                }
                 await Task.Delay(500);
             }
 
             _profileController.SaveCurrentProfile();
 
+            if (_launchCancelRequested)
+            {
+                Logger.Info("Launch cancelled before starting (cancel requested during preparation)");
+                _notificationManager.ShowToast("GreenLuma launch cancelled", false);
+                return;
+            }
+
             _notificationManager.ShowToast("Restarting Steam. This can take about a minute, please wait…");
 
-            if (_launcher.ValidatePaths(_config) && await _launcher.LaunchAsync(_config))
+            try
             {
-                Logger.Info("Launch completed successfully");
-                _notificationManager.ShowToast("GreenLuma injected successfully");
+                if (_launcher.ValidatePaths(_config) && await _launcher.LaunchAsync(_config))
+                {
+                    Logger.Info("Launch completed successfully");
+                    _notificationManager.ShowToast("GreenLuma injected successfully");
+                }
+                else
+                {
+                    Logger.Error("Launch failed");
+                    _notificationManager.ShowToast("GreenLuma injection failed", false);
+                }
             }
-            else
+            finally
             {
-                Logger.Error("Launch failed");
-                _notificationManager.ShowToast("GreenLuma injection failed", false);
+                _bootImageController.Hide();
             }
         }
         catch (Exception ex)
@@ -793,8 +829,63 @@ public partial class MainWindow
         finally
         {
             _launchInProgress = false;
-            BtnLaunchGreenluma.IsEnabled = true;
+            SetLaunchButtonState(cancelling: false);
         }
+    }
+
+    /// <summary>
+    /// Requests cancellation of the in-progress launch and switches the launch
+    /// button into its red cancel state. Repeated clicks are ignored until the
+    /// running launch completes and restores the idle state.
+    /// </summary>
+    private void RequestLaunchCancel()
+    {
+        if (_launchCancelRequested)
+            return;
+
+        _launchCancelRequested = true;
+        Logger.Info("User requested cancellation of the in-progress launch");
+        _notificationManager.ShowToast("Cancelling GreenLuma launch…");
+        _launcher.Cancel();
+    }
+
+    /// <summary>
+    /// Toggles the launch button between its normal "Launch GreenLuma" appearance
+    /// and the red "Cancel Launching GreenLuma" state shown while a launch runs.
+    /// </summary>
+    private void SetLaunchButtonState(bool cancelling)
+    {
+        if (cancelling)
+        {
+            BtnLaunchGreenluma.Style = (Style)FindResource("DangerButton");
+            BtnLaunchGreenluma.Foreground = (SolidColorBrush)FindResource("Text");
+            LblLaunchGreenluma.Text = "CANCEL LAUNCHING GREENLUMA";
+            IcoLaunchGreenluma.Fill = (SolidColorBrush)FindResource("Text");
+            IcoLaunchGreenluma.Data = Geometry.Parse("M6 6h12v12H6z");
+        }
+        else
+        {
+            BtnLaunchGreenluma.Style = (Style)FindResource("PrimaryButton");
+            BtnLaunchGreenluma.Foreground = (SolidColorBrush)FindResource("BackgroundDark");
+            LblLaunchGreenluma.Text = "LAUNCH GREENLUMA";
+            IcoLaunchGreenluma.Fill = (SolidColorBrush)FindResource("BackgroundDark");
+            IcoLaunchGreenluma.Data = Geometry.Parse("M8 5v14l11-7z");
+        }
+
+        BtnLaunchGreenluma.IsEnabled = true;
+    }
+
+    /// <summary>
+    /// Shows the boot image once the injector has been started. Raised from the
+    /// launcher's background thread, so it is marshalled to the UI thread.
+    /// </summary>
+    private void OnInjectorLaunched()
+    {
+        var config = _config;
+        if (config == null)
+            return;
+
+        Dispatcher.BeginInvoke(new Action(() => _bootImageController.Show(config)));
     }
 
     // ─── Settings & Status ────────────────────────────────────────────

@@ -10,7 +10,7 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.0</Version>
+    <Version>1.0.2</Version>
     <Copyright>Copyright © FroggMaster 2026</Copyright>
     <PackageIcon>icon.ico</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -39,6 +39,9 @@
 
   <ItemGroup>
     <Resource Include="icon.ico" />
+    <EmbeddedResource Include="Resources\BootImage_GLManager.png">
+      <LogicalName>GreenLuma_Manager.Resources.BootImage_GLManager.png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

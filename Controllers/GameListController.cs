@@ -4,8 +4,10 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Threading;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
+using GreenLuma_Manager.Utilities;
 
 namespace GreenLuma_Manager.Controllers;
 
@@ -15,9 +17,12 @@ public class GameListController
     private readonly TextBlock _txtGameCount;
     private readonly UIElement _pnlEmptyGames;
     private readonly NotificationManager _notificationManager;
+    private readonly Dispatcher _dispatcher;
     private ICollectionView? _gamesView;
     private string? _searchFilter;
     private string? _typeFilter;
+
+    private static readonly TimeSpan HighlightDuration = TimeSpan.FromMilliseconds(1500);
 
     public ObservableCollection<Game> Games { get; }
     public string? EditingOriginalName { get; set; }
@@ -38,6 +43,7 @@ public class GameListController
         _txtGameCount = txtGameCount;
         _pnlEmptyGames = pnlEmptyGames;
         _notificationManager = notificationManager;
+        _dispatcher = lstGames.Dispatcher;
 
         Games = [];
         _gamesView = CollectionViewSource.GetDefaultView(Games);
@@ -138,6 +144,7 @@ public class GameListController
         Games.Insert(index, game);
         _notificationManager.UpdateGameCount(Games.Count);
         UpdateGameListState();
+        HighlightNewGames([game], game);
     }
 
     public void RemoveGame(Game game)
@@ -147,7 +154,7 @@ public class GameListController
         UpdateGameListState();
     }
 
-    public void LoadGames(IEnumerable<Game> games)
+    public void LoadGames(IEnumerable<Game> games, IReadOnlyCollection<Game>? newlyAdded = null)
     {
         Games.Clear();
         foreach (var game in games)
@@ -160,6 +167,40 @@ public class GameListController
 
         _notificationManager.UpdateGameCount(Games.Count);
         UpdateGameListState();
+        if (newlyAdded is { Count: > 0 })
+            HighlightNewGames(newlyAdded, newlyAdded.First());
+    }
+
+    /// <summary>
+    /// Briefly highlights the given games and scrolls the list to reveal the scroll target.
+    /// Highlight state is transient and cleared after <see cref="HighlightDuration"/>.
+    /// </summary>
+    public void HighlightNewGames(IReadOnlyCollection<Game> games, Game? scrollTarget)
+    {
+        if (games.Count == 0)
+            return;
+
+        foreach (var game in games)
+            game.IsHighlighted = true;
+
+        _dispatcher.BeginInvoke(
+            DispatcherPriority.Loaded,
+            new Action(() =>
+            {
+                _lstGames.UpdateLayout();
+                if (scrollTarget != null)
+                    SmoothScroll.BringIntoView(
+                        _lstGames.ItemContainerGenerator.ContainerFromItem(scrollTarget) as FrameworkElement);
+            }));
+
+        var timer = new DispatcherTimer { Interval = HighlightDuration };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            foreach (var game in games)
+                game.IsHighlighted = false;
+        };
+        timer.Start();
     }
 
     public void UpdateGameListState()
@@ -301,12 +342,14 @@ public class GameListController
         Logger.Info($"ImportAppIdsAsync: {resolvedCount} resolved, {skippedCount} skipped (of {appIdsList.Count} total)");
 
         var addedCount = 0;
+        var addedGames = new List<Game>();
         foreach (var game in importedGames)
         {
             if (!Games.Any(g => g.AppId == game.AppId))
             {
                 Games.Add(game);
                 profile.Games.Add(game);
+                addedGames.Add(game);
                 addedCount++;
             }
         }
@@ -315,6 +358,7 @@ public class GameListController
 
         _notificationManager.UpdateGameCount(Games.Count);
         UpdateGameListState();
+        HighlightNewGames(addedGames, addedGames.FirstOrDefault());
     }
 
     public int GetUncheckedGameCount()
