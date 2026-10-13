@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Threading;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
 
@@ -15,9 +16,13 @@ public class GameListController
     private readonly TextBlock _txtGameCount;
     private readonly UIElement _pnlEmptyGames;
     private readonly NotificationManager _notificationManager;
+    private readonly Dispatcher _dispatcher;
+    private static readonly TimeSpan HighlightDuration = TimeSpan.FromMilliseconds(1500);
     private ICollectionView? _gamesView;
     private string? _searchFilter;
     private string? _typeFilter;
+    private DispatcherTimer? _highlightTimer;
+    private Game? _highlightedGame;
 
     public ObservableCollection<Game> Games { get; }
     public string? EditingOriginalName { get; set; }
@@ -38,6 +43,7 @@ public class GameListController
         _txtGameCount = txtGameCount;
         _pnlEmptyGames = pnlEmptyGames;
         _notificationManager = notificationManager;
+        _dispatcher = lstGames.Dispatcher;
 
         Games = [];
         _gamesView = CollectionViewSource.GetDefaultView(Games);
@@ -62,40 +68,48 @@ public class GameListController
     {
         var hasSearch = !string.IsNullOrWhiteSpace(_searchFilter);
         var hasType = IsTypeFilterActive;
+        var showDlcsFlat = hasType && string.Equals(_typeFilter, "DLC", StringComparison.OrdinalIgnoreCase);
 
-        if (!hasSearch && !hasType)
+        var rawFilter = _searchFilter?.Trim();
+        var normalizedFilter = !string.IsNullOrWhiteSpace(rawFilter)
+            ? NormalizeForSearch(rawFilter)
+            : null;
+
+        var typeFilterValue = _typeFilter;
+
+        _gamesView!.Filter = obj =>
         {
-            _gamesView!.Filter = null;
+            if (obj is not Game game) return false;
+
+            // DLCs are shown nested under their parent game rather than as top-level entries,
+            // unless the user explicitly filters for DLCs.
+            var isDlc = !string.IsNullOrEmpty(game.ParentAppId);
+            if (isDlc != showDlcsFlat)
+                return false;
+
+            // Apply name search filter
+            if (normalizedFilter != null)
+            {
+                var normalizedName = NormalizeForSearch(game.Name);
+                if (!normalizedName.Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            // Apply type filter
+            if (hasType && !string.Equals(game.Type, typeFilterValue, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return true;
+        };
+
+        _gamesView!.Refresh();
+
+        if (!IsFilterActive)
+        {
             _notificationManager.UpdateGameCount(Games.Count);
         }
         else
         {
-            var rawFilter = _searchFilter?.Trim();
-            var normalizedFilter = !string.IsNullOrWhiteSpace(rawFilter)
-                ? NormalizeForSearch(rawFilter)
-                : null;
-
-            var typeFilterValue = _typeFilter;
-
-            _gamesView!.Filter = obj =>
-            {
-                if (obj is not Game game) return false;
-
-                // Apply name search filter
-                if (normalizedFilter != null)
-                {
-                    var normalizedName = NormalizeForSearch(game.Name);
-                    if (!normalizedName.Contains(normalizedFilter, StringComparison.OrdinalIgnoreCase))
-                        return false;
-                }
-
-                // Apply type filter
-                if (hasType && !string.Equals(game.Type, typeFilterValue, StringComparison.OrdinalIgnoreCase))
-                    return false;
-
-                return true;
-            };
-
             var filteredCount = 0;
             foreach (var _ in _gamesView!)
                 filteredCount++;
@@ -103,6 +117,44 @@ public class GameListController
         }
 
         UpdateGameListState();
+    }
+
+    /// <summary>
+    /// Rebuilds DLC links and re-applies the view filter after DLC parent links change, so nested
+    /// DLCs and virtual parent headers appear/disappear correctly.
+    /// </summary>
+    public void RefreshDlcGrouping()
+    {
+        if (!_dispatcher.CheckAccess())
+        {
+            _dispatcher.Invoke(RefreshDlcGrouping);
+            return;
+        }
+
+        PopulateDlcLinks();
+        ApplyFilters();
+    }
+
+    /// <summary>
+    /// Links each profile game's DLC entries to it so they can be nested under it in the list.
+    /// A DLC's <see cref="Game.ParentAppId"/> points at its base game's app id.
+    /// </summary>
+    public void PopulateDlcLinks()
+    {
+        var dlcsByParent = Games
+            .Where(g => !string.IsNullOrEmpty(g.ParentAppId))
+            .GroupBy(g => g.ParentAppId!, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+        foreach (var game in Games)
+        {
+            game.Dlcs.Clear();
+            if (dlcsByParent.TryGetValue(game.AppId, out var children))
+                foreach (var child in children)
+                    game.Dlcs.Add(child);
+
+            game.NotifyDlcIndicatorsChanged();
+        }
     }
 
     /// <summary>
@@ -120,46 +172,124 @@ public class GameListController
 
     public void ClearGames()
     {
+        ClearActiveHighlight();
         Games.Clear();
+        PopulateDlcLinks();
         _notificationManager.UpdateGameCount(Games.Count);
         UpdateGameListState();
     }
 
-    public void AddGame(Game game)
+    public void AddGame(Game game) => AddGames([game]);
+
+    /// <summary>
+    /// Adds a batch of games, skipping duplicates and keeping the list alphabetically ordered.
+    /// </summary>
+    public IReadOnlyList<Game> AddGames(IReadOnlyCollection<Game> games)
     {
-        if (Games.Any(g => g.AppId == game.AppId))
-            return;
+        var added = new List<Game>();
 
-        // Insert in alphabetical order by name
-        var index = 0;
-        while (index < Games.Count && string.Compare(Games[index].Name, game.Name, StringComparison.OrdinalIgnoreCase) <= 0)
-            index++;
+        foreach (var game in games)
+        {
+            if (Games.Any(g => g.AppId == game.AppId))
+                continue;
 
-        Games.Insert(index, game);
+            // Insert in alphabetical order by name
+            var index = 0;
+            while (index < Games.Count && string.Compare(Games[index].Name, game.Name, StringComparison.OrdinalIgnoreCase) <= 0)
+                index++;
+
+            Games.Insert(index, game);
+            added.Add(game);
+        }
+
+        if (added.Count == 0)
+            return [];
+
+        PopulateDlcLinks();
         _notificationManager.UpdateGameCount(Games.Count);
         UpdateGameListState();
+        return added;
     }
 
     public void RemoveGame(Game game)
     {
-        Games.Remove(game);
+        // If the game still has DLCs in the profile, keep it as a virtual parent ("base game not in
+        // profile") so the installed DLCs remain visible; otherwise remove it.
+        if (Games.Any(g => string.Equals(g.ParentAppId, game.AppId, StringComparison.Ordinal)))
+            game.IsVirtual = true;
+        else
+            Games.Remove(game);
+
+        // Drop virtual parents that no longer have any DLCs in the profile.
+        foreach (var virtualParent in Games.Where(g => g.IsVirtual &&
+                     !Games.Any(d => string.Equals(d.ParentAppId, g.AppId, StringComparison.Ordinal))).ToList())
+        {
+            Games.Remove(virtualParent);
+        }
+
+        PopulateDlcLinks();
         _notificationManager.UpdateGameCount(Games.Count);
         UpdateGameListState();
     }
 
     public void LoadGames(IEnumerable<Game> games)
     {
+        ClearActiveHighlight();
         Games.Clear();
         foreach (var game in games)
+        {
+            game.IsHighlighted = false;
             Games.Add(game);
+        }
 
         // Clear search filter when loading a new set of games
         _searchFilter = null;
-        if (_gamesView != null)
-            _gamesView.Filter = null;
+        PopulateDlcLinks();
+        ApplyFilters();
+    }
 
-        _notificationManager.UpdateGameCount(Games.Count);
-        UpdateGameListState();
+    /// <summary>
+    /// Highlights the game explicitly added from search results and scrolls the list to reveal it.
+    /// Any previous add highlight is cleared immediately.
+    /// </summary>
+    public void HighlightSearchAddedGame(Game game)
+    {
+        ClearActiveHighlight();
+
+        _highlightedGame = game;
+        game.IsHighlighted = true;
+
+        _dispatcher.BeginInvoke(
+            DispatcherPriority.Loaded,
+            new Action(() =>
+            {
+                _lstGames.UpdateLayout();
+                (_lstGames.ItemContainerGenerator.ContainerFromItem(game) as FrameworkElement)?.BringIntoView();
+            }));
+
+        var timer = new DispatcherTimer { Interval = HighlightDuration };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!ReferenceEquals(_highlightedGame, game))
+                return;
+
+            game.IsHighlighted = false;
+            _highlightedGame = null;
+            _highlightTimer = null;
+        };
+        _highlightTimer = timer;
+        timer.Start();
+    }
+
+    private void ClearActiveHighlight()
+    {
+        _highlightTimer?.Stop();
+        _highlightTimer = null;
+
+        if (_highlightedGame != null)
+            _highlightedGame.IsHighlighted = false;
+        _highlightedGame = null;
     }
 
     public void UpdateGameListState()

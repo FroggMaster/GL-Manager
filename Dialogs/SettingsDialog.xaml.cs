@@ -60,6 +60,7 @@ public partial class SettingsDialog
         TxtGreenLumaPath.Text = _config.GreenLumaPath;
         ChkReplaceSteamAutostart.IsChecked = _config.ReplaceSteamAutostart;
         ChkPrefetchAppList.IsChecked = _config.PrefetchAppList;
+        TxtSteamApiKey.Text = _config.SteamApiKey;
         ChkDisableUpdateCheck.IsChecked = _config.DisableUpdateCheck;
         ChkAutoUpdate.IsChecked = _config.AutoUpdate;
         ChkCheckGreenLumaUpdates.IsChecked = _config.CheckGreenLumaUpdates;
@@ -1090,8 +1091,20 @@ public partial class SettingsDialog
         _config.GreenLumaUsername = TxtGreenLumaUsername.Text.Trim();
         _config.GreenLumaPassword = PwdGreenLumaPassword.Password;
 
+        var previousApiKey = SearchService.ApiKey;
+        _config.SteamApiKey = TxtSteamApiKey.Text.Trim();
+
         ConfigService.Save(_config);
         AutostartManager.ManageAutostart(_config.ReplaceSteamAutostart, _config);
+
+        // Apply a changed Steam Web API key immediately and refresh the cached app list.
+        if (!string.Equals(_config.SteamApiKey, previousApiKey, StringComparison.Ordinal))
+        {
+            SearchService.ApiKey = _config.SteamApiKey;
+            SearchService.ResetAppListCache();
+            if (_config.PrefetchAppList)
+                _ = SearchService.PrefetchAsync(_config);
+        }
 
         Logger.Info($"Settings saved (steamPath='{_config.SteamPath}', mode='{_config.PreferredMode ?? "auto"}')");
         DialogResult = true;

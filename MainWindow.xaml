@@ -980,10 +980,13 @@
                                     <TextBlock
                                         Grid.Column="1"
                                         Margin="12,0,0,0"
+                                        MaxWidth="440"
                                         HorizontalAlignment="Left"
                                         VerticalAlignment="Center"
                                         Foreground="{TemplateBinding Foreground}"
-                                        Text="{TemplateBinding Header}" />
+                                        Text="{TemplateBinding Header}"
+                                        TextTrimming="CharacterEllipsis"
+                                        ToolTip="{TemplateBinding Header}" />
                                 </Grid>
                             </Border>
                             <ControlTemplate.Triggers>
@@ -1001,6 +1004,110 @@
                 BasedOn="{StaticResource ContextMenuItem}"
                 TargetType="MenuItem">
                 <Setter Property="Foreground" Value="{StaticResource Danger}" />
+            </Style>
+
+            <Style x:Key="AppContextMenu" TargetType="ContextMenu">
+                <Setter Property="Background" Value="{StaticResource BackgroundSurface}" />
+                <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ContextMenu">
+                            <Border
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                                <Border.Effect>
+                                    <DropShadowEffect
+                                        BlurRadius="12"
+                                        Direction="270"
+                                        Opacity="0.3"
+                                        ShadowDepth="4"
+                                        Color="Black" />
+                                </Border.Effect>
+                                <StackPanel Margin="0" IsItemsHost="True" />
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <ContextMenu
+                x:Key="GameRowContextMenu"
+                DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                Style="{StaticResource AppContextMenu}">
+                <MenuItem
+                    Click="AddAllDlcFromSearchMenuItem_Click"
+                    Header="{Binding AddAllDlcMenuHeader}"
+                    Tag="{Binding}">
+                    <MenuItem.Style>
+                        <Style BasedOn="{StaticResource ContextMenuItem}" TargetType="MenuItem">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding CanAddAllDlcs}" Value="False">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </MenuItem.Style>
+                    <MenuItem.Icon>
+                        <Path
+                            Width="16"
+                            Height="16"
+                            Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
+                            Fill="{StaticResource Text}"
+                            Stretch="Uniform" />
+                    </MenuItem.Icon>
+                </MenuItem>
+            </ContextMenu>
+
+            <Style x:Key="DlcExpanderToggle" TargetType="ToggleButton">
+                <Setter Property="Width" Value="24" />
+                <Setter Property="Height" Value="24" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Focusable" Value="False" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToggleButton">
+                            <Border Background="Transparent">
+                                <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Path
+                                        x:Name="ChevronCollapsed"
+                                        Width="10"
+                                        Height="10"
+                                        Data="M8.59,16.59L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.59Z"
+                                        Fill="{StaticResource TextSecondary}"
+                                        Stretch="Uniform" />
+                                    <Path
+                                        x:Name="ChevronExpanded"
+                                        Width="10"
+                                        Height="10"
+                                        Data="M7.41,8.59L12,13.17L16.59,8.59L18,10L12,16L6,10L7.41,8.59Z"
+                                        Fill="{StaticResource TextSecondary}"
+                                        Stretch="Uniform"
+                                        Visibility="Collapsed" />
+                                </Grid>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="ChevronCollapsed" Property="Visibility" Value="Collapsed" />
+                                    <Setter TargetName="ChevronExpanded" Property="Visibility" Value="Visible" />
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ChevronCollapsed" Property="Fill" Value="{StaticResource Text}" />
+                                    <Setter TargetName="ChevronExpanded" Property="Fill" Value="{StaticResource Text}" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding HasDlcs}" Value="False">
+                        <Setter Property="Visibility" Value="Hidden" />
+                    </DataTrigger>
+                </Style.Triggers>
             </Style>
 
             <Style x:Key="ResultsDataGrid" TargetType="DataGrid">
@@ -1176,7 +1283,11 @@
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0,0,0,1" />
                 <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+                <Setter Property="ContextMenu" Value="{StaticResource GameRowContextMenu}" />
                 <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsDlc}" Value="True">
+                        <Setter Property="Background" Value="#FF17202E" />
+                    </DataTrigger>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter Property="Background" Value="#FF1E1E1E" />
                     </Trigger>
@@ -1486,29 +1597,45 @@
                                     AutoGenerateColumns="False"
                                     CanUserSortColumns="True"
                                     MouseDoubleClick="SearchResult_MouseDoubleClick"
+                                    Sorting="DgResults_Sorting"
                                     Style="{StaticResource ResultsDataGrid}"
                                     VerticalScrollBarVisibility="Hidden"
                                     Visibility="Collapsed">
                                     <DataGrid.Columns>
                                         <DataGridTemplateColumn
-                                            Width="72"
+                                            Width="108"
                                             CanUserSort="False"
                                             Header=""
                                             IsReadOnly="True">
                                             <DataGridTemplateColumn.CellStyle>
                                                 <Style TargetType="DataGridCell">
                                                     <Setter Property="Padding" Value="0" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsDlc}" Value="True">
+                                                            <Setter Property="Padding" Value="28,0,0,0" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
                                                 </Style>
                                             </DataGridTemplateColumn.CellStyle>
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
-                                                    <Border
-                                                        Width="48"
-                                                        Height="48"
-                                                        Margin="4,0,12,0"
-                                                        Background="{StaticResource BackgroundDark}"
-                                                        ClipToBounds="True"
-                                                        CornerRadius="6">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ToggleButton
+                                                            Width="24"
+                                                            Height="24"
+                                                            Margin="8,0,4,0"
+                                                            VerticalAlignment="Center"
+                                                            Checked="DlcExpander_Checked"
+                                                            IsChecked="{Binding IsExpanded, Mode=OneWay}"
+                                                            Style="{StaticResource DlcExpanderToggle}"
+                                                            Unchecked="DlcExpander_Unchecked" />
+                                                        <Border
+                                                            Width="48"
+                                                            Height="48"
+                                                            Margin="4,0,12,0"
+                                                            Background="{StaticResource BackgroundDark}"
+                                                            ClipToBounds="True"
+                                                            CornerRadius="6">
                                                         <Grid>
                                                             <Image Stretch="Fill">
                                                                 <Image.Source>
@@ -1537,6 +1664,7 @@
                                                             </Image>
                                                         </Grid>
                                                     </Border>
+                                                    </StackPanel>
                                                 </DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
@@ -1559,20 +1687,67 @@
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
-                                        <DataGridTextColumn
-                                            Width="120"
-                                            Binding="{Binding Type}"
+                                        <DataGridTemplateColumn
+                                            Width="170"
                                             CanUserSort="True"
                                             Header="TYPE"
-                                            IsReadOnly="True" />
-                                        <DataGridTemplateColumn Width="120" Header="">
+                                            IsReadOnly="True"
+                                            SortMemberPath="Type">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <TextBlock
+                                                            VerticalAlignment="Center"
+                                                            Foreground="{StaticResource TextSecondary}"
+                                                            Text="{Binding Type}" />
+                                                        <Border
+                                                            Margin="8,0,0,0"
+                                                            Padding="6,2"
+                                                            VerticalAlignment="Center"
+                                                            Background="#FF2A2A2A"
+                                                            CornerRadius="4">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding HasSearchDlcLabel}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <TextBlock
+                                                                FontSize="11"
+                                                                Foreground="{StaticResource TextTertiary}"
+                                                                Text="{Binding SearchDlcLabel}" />
+                                                        </Border>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Width="200" Header="">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <Button
                                                         Click="AddGameButton_Click"
-                                                        Content="ADD"
-                                                        Style="{StaticResource AddButton}"
-                                                        Tag="{Binding}" />
+                                                        Tag="{Binding}">
+                                                        <Button.Style>
+                                                            <Style BasedOn="{StaticResource AddButton}" TargetType="Button">
+                                                                <Setter Property="Content" Value="ADD" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsInProfile}" Value="True">
+                                                                        <Setter Property="Content" Value="Already in profile" />
+                                                                        <Setter Property="Padding" Value="12,0" />
+                                                                        <Setter Property="Background" Value="#FF14331A" />
+                                                                        <Setter Property="BorderBrush" Value="#FF3E9E52" />
+                                                                        <Setter Property="Foreground" Value="#FF7ED08A" />
+                                                                        <Setter Property="Cursor" Value="Arrow" />
+                                                                        <Setter Property="IsEnabled" Value="False" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Button.Style>
+                                                    </Button>
                                                 </DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
@@ -1949,6 +2124,32 @@
                                                     Padding="16,12"
                                                     Background="{StaticResource BackgroundSurface}"
                                                     CornerRadius="8">
+                                                    <Border.ContextMenu>
+                                                        <ContextMenu Style="{StaticResource AppContextMenu}">
+                                                            <MenuItem
+                                                                Click="AddAllDlcToProfileMenuItem_Click"
+                                                                Header="{Binding AddAllDlcMenuHeader}"
+                                                                Tag="{Binding}">
+                                                                <MenuItem.Style>
+                                                                    <Style BasedOn="{StaticResource ContextMenuItem}" TargetType="MenuItem">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding CanAddAllDlcs}" Value="False">
+                                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </MenuItem.Style>
+                                                                <MenuItem.Icon>
+                                                                    <Path
+                                                                        Width="16"
+                                                                        Height="16"
+                                                                        Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
+                                                                        Fill="{StaticResource Text}"
+                                                                        Stretch="Uniform" />
+                                                                </MenuItem.Icon>
+                                                            </MenuItem>
+                                                        </ContextMenu>
+                                                    </Border.ContextMenu>
                                                     <Border.Style>
                                                         <Style TargetType="Border">
                                                             <Style.Triggers>
@@ -1966,12 +2167,29 @@
                                                     <Grid>
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="Auto" />
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
                                                         </Grid.ColumnDefinitions>
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="Auto" />
+                                                        </Grid.RowDefinitions>
+
+                                                        <ToggleButton
+                                                            Grid.Row="0"
+                                                            Grid.Column="0"
+                                                            Width="24"
+                                                            Height="24"
+                                                            Margin="0,0,8,0"
+                                                            VerticalAlignment="Center"
+                                                            Checked="ProfileExpander_Checked"
+                                                            IsChecked="{Binding IsExpanded, Mode=OneWay}"
+                                                            Style="{StaticResource DlcExpanderToggle}"
+                                                            Unchecked="ProfileExpander_Unchecked" />
 
                                                         <Border
-                                                            Grid.Column="0"
+                                                            Grid.Column="1"
                                                             Width="48"
                                                             Height="48"
                                                             Margin="0,0,12,0"
@@ -2012,7 +2230,7 @@
                                                             </Grid>
                                                         </Border>
 
-                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                        <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                                             <Grid>
                                                                 <TextBlock
                                                                     x:Name="ViewModeText"
@@ -2119,15 +2337,58 @@
                                                                 </Border>
                                                             </Grid>
 
-                                                            <TextBlock
-                                                                Margin="0,4,0,0"
-                                                                FontSize="11"
-                                                                Foreground="{StaticResource TextSecondary}"
-                                                                Text="{Binding Type}" />
+                                                            <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                                                <TextBlock
+                                                                    FontSize="11"
+                                                                    Foreground="{StaticResource TextSecondary}"
+                                                                    Text="{Binding Type}" />
+                                                                <Border
+                                                                    Margin="8,0,0,0"
+                                                                    Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="#FF2A2A2A"
+                                                                    CornerRadius="4">
+                                                                    <Border.Style>
+                                                                        <Style TargetType="Border">
+                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding HasProfileDlcLabel}" Value="True">
+                                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Border.Style>
+                                                                    <TextBlock
+                                                                        FontSize="11"
+                                                                        Foreground="{StaticResource TextTertiary}"
+                                                                        Text="{Binding ProfileDlcLabel}" />
+                                                                </Border>
+                                                                <Border
+                                                                    Margin="8,0,0,0"
+                                                                    Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="#FF3A2E1A"
+                                                                    CornerRadius="4">
+                                                                    <Border.Style>
+                                                                        <Style TargetType="Border">
+                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding IsVirtual}" Value="True">
+                                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Border.Style>
+                                                                    <TextBlock
+                                                                        FontSize="11"
+                                                                        Foreground="#FFE0B060"
+                                                                        Text="Base game not in profile" />
+                                                                </Border>
+                                                            </StackPanel>
                                                         </StackPanel>
 
                                                         <Button
-                                                            Grid.Column="2"
+                                                            Grid.Column="3"
                                                             Click="RemoveGameButton_Click"
                                                             Content="REMOVE"
                                                             Tag="{Binding}">
@@ -2138,10 +2399,138 @@
                                                                             <Setter Property="Opacity" Value="0.3" />
                                                                             <Setter Property="IsEnabled" Value="False" />
                                                                         </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding IsVirtual}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                        </DataTrigger>
                                                                     </Style.Triggers>
                                                                 </Style>
                                                             </Button.Style>
                                                         </Button>
+
+                                                        <Button
+                                                            Grid.Column="3"
+                                                            Click="AddVirtualParentButton_Click"
+                                                            Content="ADD"
+                                                            Tag="{Binding}">
+                                                            <Button.Style>
+                                                                <Style BasedOn="{StaticResource AddButton}" TargetType="Button">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsVirtual}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Button.Style>
+                                                        </Button>
+
+                                                        <Border
+                                                            x:Name="HighlightOverlay"
+                                                            Grid.ColumnSpan="4"
+                                                            Background="{StaticResource Accent}"
+                                                            CornerRadius="8"
+                                                            IsHitTestVisible="False">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Opacity" Value="0" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
+                                                                            <DataTrigger.EnterActions>
+                                                                                <BeginStoryboard>
+                                                                                    <Storyboard>
+                                                                                        <DoubleAnimation
+                                                                                            Storyboard.TargetProperty="Opacity"
+                                                                                            From="0"
+                                                                                            To="0.30"
+                                                                                            Duration="0:0:0.25">
+                                                                                            <DoubleAnimation.EasingFunction>
+                                                                                                <QuadraticEase EasingMode="EaseOut" />
+                                                                                            </DoubleAnimation.EasingFunction>
+                                                                                        </DoubleAnimation>
+                                                                                        <DoubleAnimation
+                                                                                            BeginTime="0:0:0.25"
+                                                                                            Storyboard.TargetProperty="Opacity"
+                                                                                            From="0.30"
+                                                                                            To="0"
+                                                                                            Duration="0:0:1.05">
+                                                                                            <DoubleAnimation.EasingFunction>
+                                                                                                <QuadraticEase EasingMode="EaseIn" />
+                                                                                            </DoubleAnimation.EasingFunction>
+                                                                                        </DoubleAnimation>
+                                                                                    </Storyboard>
+                                                                                </BeginStoryboard>
+                                                                            </DataTrigger.EnterActions>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                        </Border>
+
+                                                        <ItemsControl
+                                                            Grid.Row="1"
+                                                            Grid.ColumnSpan="4"
+                                                            Margin="60,10,0,0"
+                                                            ItemsSource="{Binding Dlcs}">
+                                                            <ItemsControl.Style>
+                                                                <Style TargetType="ItemsControl">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </ItemsControl.Style>
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border
+                                                                        Margin="0,0,0,6"
+                                                                        Padding="12,8"
+                                                                        Background="#FF17202E"
+                                                                        CornerRadius="6">
+                                                                        <Grid>
+                                                                            <Grid.ColumnDefinitions>
+                                                                                <ColumnDefinition Width="Auto" />
+                                                                                <ColumnDefinition Width="*" />
+                                                                                <ColumnDefinition Width="Auto" />
+                                                                            </Grid.ColumnDefinitions>
+                                                                            <Border
+                                                                                Grid.Column="0"
+                                                                                Width="36"
+                                                                                Height="36"
+                                                                                Margin="0,0,10,0"
+                                                                                Background="{StaticResource BackgroundDark}"
+                                                                                ClipToBounds="True"
+                                                                                CornerRadius="6">
+                                                                                <Image Stretch="Fill">
+                                                                                    <Image.Source>
+                                                                                        <Binding Converter="{StaticResource IconUrlConverter}" Path="IconUrl" />
+                                                                                    </Image.Source>
+                                                                                </Image>
+                                                                            </Border>
+                                                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                                                <TextBlock
+                                                                                    FontSize="13"
+                                                                                    Foreground="{StaticResource Text}"
+                                                                                    Text="{Binding Name}"
+                                                                                    TextTrimming="CharacterEllipsis" />
+                                                                                <TextBlock
+                                                                                    Margin="0,2,0,0"
+                                                                                    FontSize="11"
+                                                                                    Foreground="{StaticResource TextSecondary}"
+                                                                                    Text="{Binding Type}" />
+                                                                            </StackPanel>
+                                                                            <Button
+                                                                                Grid.Column="2"
+                                                                                Click="RemoveGameButton_Click"
+                                                                                Content="REMOVE"
+                                                                                Style="{StaticResource RemoveButton}"
+                                                                                Tag="{Binding}" />
+                                                                        </Grid>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
                                                     </Grid>
                                                 </Border>
                                             </DataTemplate>

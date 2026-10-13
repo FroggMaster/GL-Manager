@@ -1025,6 +1025,39 @@
                         </Border>
 
                         <Border
+                            Margin="0,0,0,20"
+                            Padding="24"
+                            Background="{StaticResource BackgroundSurface}"
+                            BorderBrush="{StaticResource Border}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock
+                                    Margin="0,0,0,20"
+                                    FontSize="12"
+                                    FontWeight="Bold"
+                                    Foreground="{StaticResource TextTertiary}"
+                                    Text="STEAM SEARCH" />
+                                <StackPanel>
+                                    <TextBlock
+                                        Margin="0,0,0,8"
+                                        FontSize="13"
+                                        Foreground="{StaticResource Text}"
+                                        Text="Steam Web API Key" />
+                                    <TextBox
+                                        x:Name="TxtSteamApiKey"
+                                        Style="{StaticResource InputTextBox}" />
+                                    <TextBlock
+                                        Margin="0,4,0,0"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Optional. Enables local app search by fetching the full Steam app list. Get a free key at steamcommunity.com/dev/apikey. Leave empty to disable."
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border
                             Padding="24"
                             Background="{StaticResource BackgroundSurface}"
                             BorderBrush="{StaticResource Border}"

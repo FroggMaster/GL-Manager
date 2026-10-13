@@ -20,6 +20,12 @@ public class SearchController
 
     private readonly ObservableCollection<Game> _searchResults;
     private CancellationTokenSource? _searchCts;
+    private string? _sortMemberPath;
+    private bool _sortAscending = true;
+    private bool _rebuilding;
+
+    /// <summary>Returns whether an app id is already in the active profile (drives the results grid buttons).</summary>
+    public Func<string, bool>? IsAppIdInProfile { get; set; }
 
     public event Action<Game>? GameSelected;
 
@@ -153,7 +159,15 @@ public class SearchController
         }
 
         foreach (var game in results.Take(60))
+        {
+            game.IsExpanded = false;
+            game.IsInProfile = IsAppIdInProfile?.Invoke(game.AppId) ?? false;
+            foreach (var dlc in game.Dlcs)
+                dlc.IsInProfile = IsAppIdInProfile?.Invoke(dlc.AppId) ?? false;
             _searchResults.Add(game);
+        }
+
+        Logger.Debug($"DisplaySearchResults: bound {_searchResults.Count} results");
 
         _dgResults.Visibility = Visibility.Visible;
         _txtResultCount.Text = results.Count > 60
@@ -167,7 +181,9 @@ public class SearchController
     {
         try
         {
-            await SearchService.FetchIconUrlsAsync(results).ConfigureAwait(false);
+            // Include the nested DLCs so their icons resolve as well.
+            var all = results.Concat(results.SelectMany(g => g.Dlcs)).ToList();
+            await SearchService.FetchIconUrlsAsync(all).ConfigureAwait(false);
         }
         catch
         {
@@ -180,8 +196,123 @@ public class SearchController
         _searchCts?.Cancel();
     }
 
+    /// <summary>
+    /// Inserts or removes a game's DLC rows directly beneath it in the results when its expander
+    /// is toggled. The collection is manipulated (rather than binding row visibility) because the
+    /// DataGrid reliably reflects collection changes.
+    /// </summary>
+    public void SetDlcExpanded(Game game, bool expanded)
+    {
+        if (_rebuilding || game is not { Dlcs.Count: > 0 })
+            return;
+
+        if (expanded)
+        {
+            var insertAt = _searchResults.IndexOf(game) + 1;
+            if (insertAt <= 0)
+                return;
+
+            foreach (var dlc in game.Dlcs)
+            {
+                dlc.Parent = game;
+                if (_searchResults.Contains(dlc))
+                    continue;
+
+                _searchResults.Insert(insertAt, dlc);
+                insertAt++;
+            }
+        }
+        else
+        {
+            foreach (var dlc in game.Dlcs)
+                _searchResults.Remove(dlc);
+        }
+    }
+
+    /// <summary>
+    /// Sorts the results by the given member, toggling direction when the same column is clicked
+    /// again, and returns the resulting direction. Only base games are sorted; each game's DLC rows
+    /// stay directly beneath it so nesting is never interrupted.
+    /// </summary>
+    public bool ApplySort(string sortMemberPath)
+    {
+        if (string.Equals(_sortMemberPath, sortMemberPath, StringComparison.Ordinal))
+            _sortAscending = !_sortAscending;
+        else
+        {
+            _sortMemberPath = sortMemberPath;
+            _sortAscending = true;
+        }
+
+        RebuildSorted();
+        return _sortAscending;
+    }
+
+    private void RebuildSorted()
+    {
+        if (_searchResults.Count == 0)
+            return;
+
+        // Remember which parents currently have their DLC rows expanded.
+        var expandedParents = new HashSet<Game>();
+        foreach (var game in _searchResults)
+            if (game.Parent != null)
+                expandedParents.Add(game.Parent);
+
+        var baseGames = _searchResults.Where(g => g.Parent == null).ToList();
+        var path = _sortMemberPath ?? "Name";
+
+        var ordered = _sortAscending
+            ? baseGames.OrderBy(g => SortKey(g, path), StringComparer.OrdinalIgnoreCase)
+            : baseGames.OrderByDescending(g => SortKey(g, path), StringComparer.OrdinalIgnoreCase);
+
+        _rebuilding = true;
+        try
+        {
+            _searchResults.Clear();
+            foreach (var game in ordered)
+            {
+                _searchResults.Add(game);
+
+                if (!expandedParents.Contains(game))
+                    continue;
+
+                foreach (var dlc in game.Dlcs)
+                {
+                    dlc.Parent = game;
+                    _searchResults.Add(dlc);
+                }
+            }
+        }
+        finally
+        {
+            _rebuilding = false;
+        }
+    }
+
+    private static string SortKey(Game game, string sortMemberPath) => sortMemberPath switch
+    {
+        "AppId" => game.AppId.PadLeft(12, '0'),
+        "Type" => game.Type,
+        _ => game.Name
+    };
+
     public void OnSearchResultDoubleClick(Game game)
     {
         GameSelected?.Invoke(game);
+    }
+
+    /// <summary>Re-evaluates the "already in profile" state of the displayed results and their DLCs.</summary>
+    public void RefreshProfileFlags()
+    {
+        if (IsAppIdInProfile == null)
+            return;
+
+        foreach (var game in _searchResults)
+        {
+            game.IsInProfile = IsAppIdInProfile(game.AppId);
+            foreach (var dlc in game.Dlcs)
+                dlc.IsInProfile = IsAppIdInProfile(dlc.AppId);
+        }
     }
 }

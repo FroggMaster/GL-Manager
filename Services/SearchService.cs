@@ -58,8 +58,15 @@ public class SearchService
         "https://store.steampowered.com/api/storesearch/?term={0}&l=english&cc=US";
 
     private const string SteamStoreApiUrl = "https://api.steampowered.com/IStoreService/GetAppList/v1/";
-    private const string SteamApiKey = "1DD0450A99F573693CD031EBB160907D";
     private const int BatchSize = 150;
+
+    /// <summary>
+    /// Optional user-provided Steam Web API key (register at steamcommunity.com/dev/apikey) used
+    /// to fetch the full Steam app list for local search. The previously shipped key was revoked,
+    /// and Valve removed the keyless ISteamApps/GetAppList endpoint, so an empty key disables the
+    /// app-list feature (search still works through the Steam store search API).
+    /// </summary>
+    public static string ApiKey { get; set; } = string.Empty;
 
     private static readonly HttpClient Client = new();
     private static List<SteamApp>? _appListCache;
@@ -117,6 +124,12 @@ public class SearchService
 
     private static async Task<List<SteamApp>> GetAppListAsync()
     {
+        if (string.IsNullOrWhiteSpace(ApiKey))
+        {
+            Logger.Info("GetAppListAsync: no Steam Web API key configured, skipping app list fetch");
+            return [];
+        }
+
         Logger.Info("GetAppListAsync: starting app list fetch");
 
         if (_appListCache != null && DateTime.Now < _cacheExpiry)
@@ -135,7 +148,7 @@ public class SearchService
             while (true)
             {
                 var url =
-                    $"{SteamStoreApiUrl}?key={SteamApiKey}&include_games=true&include_dlc=true&include_software=true&include_videos=true&include_hardware=true&max_results={maxResults}&last_appid={lastAppId}";
+                    $"{SteamStoreApiUrl}?key={Uri.EscapeDataString(ApiKey)}&include_games=true&include_dlc=true&include_software=true&include_videos=true&include_hardware=true&max_results={maxResults}&last_appid={lastAppId}";
 
                 var response = await Client.GetStringAsync(url).ConfigureAwait(false);
                 var json = JObject.Parse(response);
@@ -173,7 +186,9 @@ public class SearchService
         {
             _isPrefetching = false;
             Logger.Error(ex, "GetAppListAsync: failed to fetch app list");
-            return _appListCache ?? [];
+            _appListCache = [];
+            _cacheExpiry = DateTime.Now.Add(TimeSpan.FromMinutes(5));
+            return _appListCache;
         }
         finally
         {
@@ -183,6 +198,8 @@ public class SearchService
 
     public static async Task PrefetchAsync(Config config)
     {
+        ApiKey = config.SteamApiKey ?? string.Empty;
+
         if (_isPrefetching || (_appListCache != null && DateTime.Now < _cacheExpiry) || !config.PrefetchAppList)
             return;
 
@@ -200,6 +217,15 @@ public class SearchService
             Logger.Error(ex, "PrefetchAsync: background prefetch failed");
         }
         });
+    }
+
+    /// <summary>
+    /// Clears the cached app list so a newly configured API key takes effect on the next fetch.
+    /// </summary>
+    public static void ResetAppListCache()
+    {
+        _appListCache = null;
+        _cacheExpiry = DateTime.MaxValue;
     }
 
     public static async Task<List<Game>> SearchAsync(string query, int maxResults = 50)
@@ -269,12 +295,20 @@ public class SearchService
                     }
                 }
 
+                await AppendMatchedGameDlcsAsync(finalResults).ConfigureAwait(false);
+
                 return finalResults;
             });
 
             return
             [
-                .. cached.Select(g => new Game { AppId = g.AppId, Name = g.Name, Type = g.Type, IconUrl = g.IconUrl })
+                .. cached.Select(g =>
+                {
+                    var clone = CloneGame(g);
+                    foreach (var dlc in g.Dlcs)
+                        clone.Dlcs.Add(CloneGame(dlc));
+                    return clone;
+                })
             ];
         }
         catch (Exception ex)
@@ -283,6 +317,17 @@ public class SearchService
             return [];
         }
     }
+
+    /// <summary>
+    /// Copies the persisted fields of a search result so callers never mutate the cached objects.
+    /// </summary>
+    private static Game CloneGame(Game g) => new()
+    {
+        AppId = g.AppId,
+        Name = g.Name,
+        Type = g.Type,
+        IconUrl = g.IconUrl
+    };
 
     private static int CalculateScore(string appName, string query)
     {
@@ -339,7 +384,7 @@ public class SearchService
         return charIndex == chars.Length;
     }
 
-    private static async Task<Dictionary<string, GameDetails>> FetchGameDetailsBatchAsync(List<string> appIds)
+    public static async Task<Dictionary<string, GameDetails>> FetchGameDetailsBatchAsync(List<string> appIds)
     {
         var results = new Dictionary<string, GameDetails>();
         var uncachedAppIds = new List<string>();
@@ -482,6 +527,308 @@ public class SearchService
         return results;
     }
 
+    /// <summary>
+    /// Enumerates the DLC app IDs for a game. The primary source is the Steam PICS
+    /// <c>common.extended.listofdlc</c> field (the same source CreamInstaller reads via
+    /// SteamCMD) plus depot <c>dlcappid</c> entries. When PICS returns nothing, the Steam
+    /// store <c>dlc</c> array is used as a fallback. Results are cached for 30 minutes.
+    /// </summary>
+    public static async Task<List<string>> GetDlcAppIdsAsync(string appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || !uint.TryParse(appId, out _))
+            return [];
+
+        var cacheKey = $"dlcids:{appId}";
+
+        return await SteamApiCache.GetOrAddAsync(cacheKey, async () =>
+        {
+            var ids = new List<string>();
+
+            try
+            {
+                var info = await DepotService.FetchAppPackageInfoAsync(appId).ConfigureAwait(false);
+                if (info?.DlcAppIds is { Count: > 0 })
+                    ids.AddRange(info.DlcAppIds);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"GetDlcAppIdsAsync: PICS lookup failed for appId={appId}");
+            }
+
+            if (ids.Count == 0)
+                try
+                {
+                    ids.AddRange(await FetchDlcIdsFromStoreApiAsync(appId).ConfigureAwait(false));
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, $"GetDlcAppIdsAsync: store lookup failed for appId={appId}");
+                }
+
+            var result = ids
+                .Where(id => uint.TryParse(id, out _))
+                .Distinct()
+                .ToList();
+
+            Logger.Debug($"GetDlcAppIdsAsync: appId={appId} -> {result.Count} DLC app ID(s)");
+            return result;
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Store-only DLC id enumeration (no Steam/PICS dependency). Used by background profile work
+    /// where waiting on the Steam connection is undesirable.
+    /// </summary>
+    public static async Task<List<string>> GetDlcAppIdsFromStoreAsync(string appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || !uint.TryParse(appId, out _))
+            return [];
+
+        var cacheKey = $"dlcids_store:{appId}";
+
+        return await SteamApiCache.GetOrAddAsync(cacheKey, async () =>
+        {
+            try
+            {
+                return await FetchDlcIdsFromStoreApiAsync(appId).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"GetDlcAppIdsFromStoreAsync: failed for appId={appId}");
+                return new List<string>();
+            }
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the parent game (app id + name) for a DLC from the Steam store <c>fullgame</c> field,
+    /// or null when it cannot be determined. Used to group DLCs whose base game is not in the profile.
+    /// </summary>
+    public static async Task<SteamParentInfo?> GetParentInfoAsync(string dlcAppId)
+    {
+        if (string.IsNullOrWhiteSpace(dlcAppId) || !uint.TryParse(dlcAppId, out _))
+            return null;
+
+        var cacheKey = $"parent:{dlcAppId}";
+
+        return await SteamApiCache.GetOrAddAsync(cacheKey, async () =>
+        {
+            try
+            {
+                var url = $"https://store.steampowered.com/api/appdetails?appids={dlcAppId}&l=english&cc=US&filters=basic";
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var response = await Client.GetStringAsync(url, cts.Token).ConfigureAwait(false);
+                var json = JObject.Parse(response);
+
+                var fullgame = json[dlcAppId]?["data"]?["fullgame"];
+                var appId = fullgame?["appid"]?.ToString();
+                if (string.IsNullOrWhiteSpace(appId))
+                    return null;
+
+                var name = fullgame?["name"]?.ToString();
+                return new SteamParentInfo(appId, string.IsNullOrWhiteSpace(name) ? $"App {appId}" : name);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"GetParentInfoAsync: failed for appId={dlcAppId}");
+                return null;
+            }
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads the <c>data.dlc</c> array from the Steam store appdetails response for a single app.</summary>
+    private static async Task<List<string>> FetchDlcIdsFromStoreApiAsync(string appId)
+    {
+        var ids = new List<string>();
+
+        var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&l=english&cc=US&filters=basic";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var response = await Client.GetStringAsync(url, cts.Token).ConfigureAwait(false);
+        var json = JObject.Parse(response);
+
+        var dlc = json[appId]?["data"]?["dlc"];
+        if (dlc is { Type: JTokenType.Array })
+            foreach (var token in dlc)
+            {
+                var value = token.ToString();
+                if (uint.TryParse(value, out _))
+                    ids.Add(value);
+            }
+
+        return ids;
+    }
+
+    /// <summary>Reads name and type for a single app from the Steam store appdetails response.</summary>
+    private static async Task<GameDetails?> FetchGameDetailFromStoreApiAsync(string appId)
+    {
+        try
+        {
+            var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&l=english&cc=US&filters=basic";
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var response = await Client.GetStringAsync(url, cts.Token).ConfigureAwait(false);
+            var json = JObject.Parse(response);
+
+            var data = json[appId]?["data"];
+            if (data == null)
+                return null;
+
+            var name = data["name"]?.ToString();
+            if (string.IsNullOrEmpty(name))
+                return null;
+
+            var type = data["type"]?.ToString() ?? "Game";
+            return new GameDetails(appId, SteamService.MapSteamTypeToDisplayType(type), name);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"FetchGameDetailFromStoreApiAsync: failed for appId={appId}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves DLC app IDs into <see cref="Game"/> entries with names and real Steam types
+    /// (when available). PICS often omits DLC entries, so unresolved IDs are retried through
+    /// the Steam store before being kept as a generic "DLC". Icons are populated separately
+    /// so callers can show the entries immediately.
+    /// </summary>
+    public static async Task<List<Game>> ResolveDlcGamesAsync(IEnumerable<string> dlcIds)
+    {
+        var ids = dlcIds.Where(id => uint.TryParse(id, out _)).Distinct().ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var detailsMap = await FetchGameDetailsBatchAsync(ids).ConfigureAwait(false);
+
+        var games = new List<Game>(ids.Count);
+        var unresolved = new List<string>();
+
+        foreach (var id in ids)
+        {
+            detailsMap.TryGetValue(id, out var details);
+            var resolved = details != null && !string.IsNullOrEmpty(details.Name) && details.Name != $"App {id}";
+
+            games.Add(new Game
+            {
+                AppId = id,
+                Name = resolved ? details!.Name : $"App {id}",
+                Type = resolved ? details!.Type : "DLC"
+            });
+
+            if (!resolved)
+                unresolved.Add(id);
+        }
+
+        if (unresolved.Count > 0)
+        {
+            var semaphore = new SemaphoreSlim(6);
+            var lookups = unresolved.Select(async id =>
+            {
+                await semaphore.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    var detail = await FetchGameDetailFromStoreApiAsync(id).ConfigureAwait(false);
+                    if (detail == null)
+                        return;
+
+                    var game = games.First(g => g.AppId == id);
+                    game.Name = detail.Name;
+                    game.Type = detail.Type;
+
+                    DetailsCache.TryAdd(id, detail);
+                    SteamApiCache.Cache[$"details:{id}"] = new CacheEntry<object>
+                    {
+                        Expiry = DateTime.Now.Add(TimeSpan.FromMinutes(30)),
+                        Data = detail
+                    };
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(lookups).ConfigureAwait(false);
+        }
+
+        return games;
+    }
+
+    /// <summary>
+    /// Appends the DLCs of the best-matching base game to the search results. The Steam store
+    /// search never returns DLCs, and DLC names often differ from the parent game (for example
+    /// Squad's "Canadian Armed Forces"), so discovering them requires the parent relationship.
+    /// </summary>
+    /// <summary>
+    /// Discovers each result's DLCs and nests them under their parent game. DLCs that the Steam
+    /// store search returned as standalone entries are pulled out of the flat list so they only
+    /// appear (nested) under their parent. Runs for every game in the results, not just the best
+    /// match, so the expander works for all games.
+    /// </summary>
+    private static async Task AppendMatchedGameDlcsAsync(List<Game> results)
+    {
+        var candidates = results
+            .Where(g => string.Equals(g.Type, "Game", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (candidates.Count == 0)
+            return;
+
+        var dlcGamesByParent = new Dictionary<string, List<Game>>(StringComparer.Ordinal);
+        var semaphore = new SemaphoreSlim(8);
+
+        var lookups = candidates.Select(async game =>
+        {
+            await semaphore.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var dlcIds = await GetDlcAppIdsAsync(game.AppId).ConfigureAwait(false);
+                if (dlcIds.Count == 0)
+                    return;
+
+                var dlcGames = await ResolveDlcGamesAsync(dlcIds).ConfigureAwait(false);
+                if (dlcGames.Count == 0)
+                    return;
+
+                lock (dlcGamesByParent)
+                    dlcGamesByParent[game.AppId] = dlcGames;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"AppendMatchedGameDlcsAsync: DLC lookup failed for appId={game.AppId}");
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        });
+
+        await Task.WhenAll(lookups).ConfigureAwait(false);
+
+        if (dlcGamesByParent.Count == 0)
+            return;
+
+        // Nest each game's DLCs under it and remember their ids so they can be removed from the
+        // flat result list (the store search often returns DLCs as standalone "Game" entries).
+        var nestedDlcIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var game in candidates)
+        {
+            if (!dlcGamesByParent.TryGetValue(game.AppId, out var dlcGames))
+                continue;
+
+            game.Dlcs.Clear();
+            foreach (var dlc in dlcGames)
+            {
+                game.Dlcs.Add(dlc);
+                nestedDlcIds.Add(dlc.AppId);
+            }
+
+            Logger.Debug($"AppendMatchedGameDlcsAsync: nested {dlcGames.Count} DLC(s) under '{game.Name}' ({game.AppId})");
+        }
+
+        results.RemoveAll(g => nestedDlcIds.Contains(g.AppId));
+    }
+
     public static async Task PopulateGameDetailsAsync(Game game)
     {
         Logger.Debug($"PopulateGameDetailsAsync: appId={game.AppId}");
@@ -560,3 +907,6 @@ public class SearchService
 
     private record SteamApp(string AppId, string Name);
 }
+
+/// <summary>Parent game info resolved from a DLC's Steam store <c>fullgame</c> field.</summary>
+public sealed record SteamParentInfo(string AppId, string Name);

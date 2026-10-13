@@ -27,6 +27,12 @@ public class Config
 
     [DataMember] public bool PrefetchAppList { get; set; }
 
+    /// <summary>
+    /// Optional user-provided Steam Web API key (steamcommunity.com/dev/apikey) used to fetch the
+    /// full Steam app list for local search. Empty disables the app-list feature.
+    /// </summary>
+    [DataMember] public string SteamApiKey { get; set; } = string.Empty;
+
     [DataMember] public bool FirstRun { get; set; } = true;
 
     /// <summary>

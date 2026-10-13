@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
@@ -89,6 +90,202 @@ public class ProfileController
         }
 
         Logger.Info($"LoadProfile: loaded profile='{profileName}' with {CurrentProfile.Games.Count} games");
+
+        _ = ResolveProfileDlcParentsAsync().ContinueWith(
+            t => Logger.Error(t.Exception!, "ResolveProfileDlcParentsAsync: unhandled exception"),
+            TaskContinuationOptions.OnlyOnFaulted);
+    }
+
+    /// <summary>
+    /// Links each base game's DLC entries to it (for nesting) and records how many DLCs Steam
+    /// reports for it (for the "installed/total" indicator). Also backfills links for DLC entries
+    /// saved before the link existed. Runs in the background.
+    /// </summary>
+    public async Task ResolveProfileDlcParentsAsync()
+    {
+        if (CurrentProfile == null)
+            return;
+
+        var games = _gameListController.Games;
+        var changed = false;
+        var semaphore = new SemaphoreSlim(8);
+
+        // 1. Link DLCs whose base game is in the profile, and record each base game's DLC total.
+        var baseGames = games
+            .Where(g => !g.IsVirtual && string.Equals(g.Type, "Game", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var unresolved = games
+            .Where(g => !g.IsVirtual &&
+                        string.IsNullOrEmpty(g.ParentAppId) &&
+                        !string.Equals(g.Type, "Game", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var dlcIdsByBase = new ConcurrentDictionary<string, List<string>>(StringComparer.Ordinal);
+        await Task.WhenAll(baseGames.Select(async baseGame =>
+        {
+            await semaphore.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                dlcIdsByBase[baseGame.AppId] = await SearchService.GetDlcAppIdsFromStoreAsync(baseGame.AppId).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"ResolveProfileDlcParentsAsync: failed for appId={baseGame.AppId}");
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }));
+
+        foreach (var baseGame in baseGames)
+        {
+            if (!dlcIdsByBase.TryGetValue(baseGame.AppId, out var dlcIds))
+                continue;
+
+            baseGame.TotalDlcCount = dlcIds.Count;
+
+            if (unresolved.Count == 0 || dlcIds.Count == 0)
+                continue;
+
+            var dlcSet = dlcIds.ToHashSet(StringComparer.Ordinal);
+            foreach (var game in unresolved)
+            {
+                if (string.IsNullOrEmpty(game.ParentAppId) && dlcSet.Contains(game.AppId))
+                {
+                    game.ParentAppId = baseGame.AppId;
+                    changed = true;
+                }
+            }
+        }
+
+        // 2. Group DLCs whose base game is not in the profile under a virtual parent header.
+        var profileAppIds = games
+            .Where(g => !g.IsVirtual)
+            .Select(g => g.AppId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var orphans = games
+            .Where(g => !g.IsVirtual &&
+                        !string.Equals(g.Type, "Game", StringComparison.OrdinalIgnoreCase) &&
+                        (string.IsNullOrEmpty(g.ParentAppId) || !profileAppIds.Contains(g.ParentAppId)))
+            .ToList();
+
+        var resolvedParents = new ConcurrentDictionary<string, SteamParentInfo>(StringComparer.Ordinal);
+        await Task.WhenAll(orphans.Select(async dlc =>
+        {
+            await semaphore.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var info = await SearchService.GetParentInfoAsync(dlc.AppId).ConfigureAwait(false);
+                if (info != null)
+                    resolvedParents[dlc.AppId] = info;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"ResolveProfileDlcParentsAsync: parent lookup failed for appId={dlc.AppId}");
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }));
+
+        // Fall back to Steam PICS for DLCs whose store page is gone (delisted), where the store
+        // lookup cannot determine a parent.
+        var stillUnresolved = orphans
+            .Where(dlc => string.IsNullOrEmpty(dlc.ParentAppId) && !resolvedParents.ContainsKey(dlc.AppId))
+            .ToList();
+
+        if (stillUnresolved.Count > 0)
+        {
+            var detailsMap = await SearchService.FetchGameDetailsBatchAsync(stillUnresolved.Select(d => d.AppId).ToList());
+            foreach (var dlc in stillUnresolved)
+            {
+                if (detailsMap.TryGetValue(dlc.AppId, out var details) &&
+                    !string.IsNullOrEmpty(details.ParentAppId) &&
+                    details.ParentAppId != dlc.AppId)
+                {
+                    resolvedParents[dlc.AppId] = new SteamParentInfo(details.ParentAppId, $"App {details.ParentAppId}");
+                }
+            }
+        }
+
+        var virtualParents = new Dictionary<string, Game>(StringComparer.Ordinal);
+        foreach (var dlc in orphans)
+        {
+            resolvedParents.TryGetValue(dlc.AppId, out var parentInfo);
+            var parentAppId = string.IsNullOrEmpty(dlc.ParentAppId) ? parentInfo?.AppId : dlc.ParentAppId;
+            if (string.IsNullOrEmpty(parentAppId))
+                continue;
+
+            if (string.IsNullOrEmpty(dlc.ParentAppId))
+            {
+                dlc.ParentAppId = parentAppId;
+                changed = true;
+            }
+
+            if (virtualParents.ContainsKey(parentAppId))
+                continue;
+
+            var existing = games.FirstOrDefault(g => g.AppId == parentAppId);
+            if (existing == null)
+            {
+                existing = new Game
+                {
+                    AppId = parentAppId,
+                    Name = parentInfo?.Name ?? $"App {parentAppId}",
+                    Type = "Game",
+                    IsVirtual = true
+                };
+                games.Add(existing);
+            }
+
+            virtualParents[parentAppId] = existing;
+        }
+
+        // Resolve virtual parents' names/icons and DLC totals for display.
+        await Task.WhenAll(virtualParents.Values.Where(v => v.IsVirtual).Select(async virtualParent =>
+        {
+            await semaphore.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await SearchService.PopulateGameDetailsAsync(virtualParent).ConfigureAwait(false);
+                virtualParent.TotalDlcCount = (await SearchService.GetDlcAppIdsFromStoreAsync(virtualParent.AppId).ConfigureAwait(false)).Count;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, $"ResolveProfileDlcParentsAsync: virtual parent details failed for appId={virtualParent.AppId}");
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }));
+
+        _gameListController.RefreshDlcGrouping();
+
+        if (!changed)
+            return;
+
+        SaveCurrentProfile();
+        Logger.Info("ResolveProfileDlcParentsAsync: linked/grouped profile DLCs");
+    }
+
+    /// <summary>
+    /// Materializes a virtual (grouping-only) base game into a real profile entry.
+    /// </summary>
+    public void AddVirtualParent(Game game)
+    {
+        if (game is not { IsVirtual: true })
+            return;
+
+        game.IsVirtual = false;
+        _gameListController.RefreshDlcGrouping();
+        SaveCurrentProfile();
+        _notificationManager.ShowToast($"Added '{game.Name}' to your profile");
+        Logger.Info($"AddVirtualParent: materialized '{game.Name}' ({game.AppId})");
     }
 
     public void SaveCurrentProfile()
@@ -99,10 +296,99 @@ public class ProfileController
 
         CurrentProfile.Games.Clear();
         foreach (var game in _gameListController.Games)
-            CurrentProfile.Games.Add(game);
+            if (!game.IsVirtual)
+                CurrentProfile.Games.Add(game);
 
         ProfileService.Save(CurrentProfile);
         Logger.Info($"SaveCurrentProfile: saved profile='{CurrentProfile.Name}' with {CurrentProfile.Games.Count} games");
+    }
+
+    /// <summary>
+    /// Discovers every DLC for the given game and adds the ones missing from the active
+    /// profile. DLCs are enumerated from the parent game relationship (PICS listofdlc with a
+    /// Steam store fallback) rather than by name, so DLCs whose names differ from the game
+    /// are still found. Existing entries are never duplicated.
+    /// </summary>
+    public async Task<Game?> AddAllDlcsAsync(Game game)
+    {
+        if (game == null)
+            return null;
+
+        if (CurrentProfile == null)
+        {
+            _notificationManager.ShowToast("No profile selected", false);
+            return null;
+        }
+
+        Logger.Info($"AddAllDlcsAsync: game='{game.Name}' ({game.AppId})");
+
+        List<string> dlcIds;
+        try
+        {
+            dlcIds = await SearchService.GetDlcAppIdsAsync(game.AppId);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"AddAllDlcsAsync: DLC lookup failed for appId={game.AppId}");
+            _notificationManager.ShowToast($"Failed to look up DLC for '{game.Name}'", false);
+            return null;
+        }
+
+        if (dlcIds.Count == 0)
+        {
+            _notificationManager.ShowToast($"No DLC found for '{game.Name}'", false);
+            return null;
+        }
+
+        var existing = _gameListController.Games.Select(g => g.AppId).ToHashSet(StringComparer.Ordinal);
+        var newIds = dlcIds.Where(id => !existing.Contains(id)).ToList();
+
+        if (newIds.Count == 0)
+        {
+            _notificationManager.ShowToast($"All {dlcIds.Count} DLC(s) for '{game.Name}' are already in your profile", false);
+            return null;
+        }
+
+        List<Game> dlcGames;
+        try
+        {
+            dlcGames = await SearchService.ResolveDlcGamesAsync(newIds);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"AddAllDlcsAsync: resolving DLC details failed for appId={game.AppId}");
+            dlcGames = newIds
+                .Select(id => new Game { AppId = id, Name = $"App {id}", Type = "DLC" })
+                .ToList();
+        }
+
+        foreach (var dlc in dlcGames)
+            dlc.ParentAppId = game.AppId;
+
+        var addedDlcs = _gameListController.AddGames(dlcGames);
+        SaveCurrentProfile();
+
+        var word = dlcGames.Count == 1 ? "DLC" : "DLCs";
+        _notificationManager.ShowToast($"Added {dlcGames.Count} {word} for '{game.Name}'");
+        Logger.Info($"AddAllDlcsAsync: added {dlcGames.Count} DLC(s) for '{game.AppId}'");
+
+        // Fill in icons after the entries are visible; keep unresolved entries typed as DLC.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SearchService.FetchIconUrlsAsync(dlcGames);
+                foreach (var dlc in dlcGames)
+                    if (dlc.Name == $"App {dlc.AppId}")
+                        dlc.Type = "DLC";
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"AddAllDlcsAsync: background icon fetch failed: {ex.Message}");
+            }
+        });
+
+        return addedDlcs.LastOrDefault();
     }
 
     public string CreateProfile()

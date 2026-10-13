@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -101,6 +102,7 @@ public partial class MainWindow
 
         // Wire cross-controller events
         _searchController.GameSelected += OnSearchResultSelected;
+        _searchController.IsAppIdInProfile = appId => _gameListController.Games.Any(g => g.AppId == appId && !g.IsVirtual);
 
         // Configure search result columns if needed
         ConfigureSearchResultColumns();
@@ -220,6 +222,59 @@ public partial class MainWindow
             _searchController.OnSearchResultDoubleClick(game);
     }
 
+    private void DlcExpander_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton { DataContext: Game game })
+        {
+            game.IsExpanded = true;
+            _searchController.SetDlcExpanded(game, true);
+        }
+    }
+
+    private void DlcExpander_Unchecked(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton { DataContext: Game game })
+        {
+            game.IsExpanded = false;
+            _searchController.SetDlcExpanded(game, false);
+        }
+    }
+
+    private void ProfileExpander_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton { DataContext: Game game })
+            game.IsExpanded = true;
+    }
+
+    private void ProfileExpander_Unchecked(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton { DataContext: Game game })
+            game.IsExpanded = false;
+    }
+
+    private void AddVirtualParentButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: Game game })
+            _profileController.AddVirtualParent(game);
+    }
+
+    private void DgResults_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        // Sorting is handled manually so DLC rows always stay directly beneath their parent game.
+        e.Handled = true;
+
+        var path = e.Column.SortMemberPath;
+        if (string.IsNullOrEmpty(path))
+            return;
+
+        var ascending = _searchController.ApplySort(path);
+
+        foreach (var column in DgResults.Columns)
+            column.SortDirection = string.Equals(column.SortMemberPath, path, StringComparison.Ordinal)
+                ? (ascending ? ListSortDirection.Ascending : ListSortDirection.Descending)
+                : null;
+    }
+
     private void OnSearchResultSelected(Game game)
     {
         if (_profileController.CurrentProfile == null)
@@ -228,16 +283,77 @@ public partial class MainWindow
             return;
         }
 
-        // Check if already in game list
-        if (_gameListController.Games.Any(g => g.AppId == game.AppId))
+        var existing = _gameListController.Games.FirstOrDefault(g => g.AppId == game.AppId);
+
+        // A base game may be present only as a virtual parent (added to group its DLCs). Clicking
+        // ADD should turn it into a real profile entry instead of reporting it as already added.
+        if (existing is { IsVirtual: true })
+        {
+            existing.IsVirtual = false;
+            if (!string.IsNullOrEmpty(game.Name))
+                existing.Name = game.Name;
+            if (!string.IsNullOrEmpty(game.IconUrl))
+                existing.IconUrl = game.IconUrl;
+            if (!string.IsNullOrEmpty(game.Type))
+                existing.Type = game.Type;
+            existing.IsInProfile = true;
+
+            _gameListController.RefreshDlcGrouping();
+            _profileController.SaveCurrentProfile();
+            _searchController.RefreshProfileFlags();
+            _gameListController.HighlightSearchAddedGame(existing);
+            _notificationManager.ShowToast($"Added '{game.Name}' to your profile");
+            return;
+        }
+
+        if (existing != null)
         {
             _notificationManager.ShowToast($"{game.Name} is already in your profile", false);
             return;
         }
 
-        _gameListController.AddGame(game);
-        _profileController.CurrentProfile.Games.Add(game);
+        // Add a copy to the profile so the profile's DLC linking never mutates the search result
+        // (which keeps its own nested DLC list and expansion state).
+        var parentAppId = game.Parent?.AppId;
+        var profileAdditions = new List<Game>();
+
+        if (!string.IsNullOrEmpty(parentAppId) && _gameListController.Games.All(g => g.AppId != parentAppId))
+        {
+            var parentCopy = new Game
+            {
+                AppId = game.Parent!.AppId,
+                Name = game.Parent.Name,
+                Type = game.Parent.Type,
+                IconUrl = game.Parent.IconUrl,
+                Depots = game.Parent.Depots,
+                IsVirtual = true,
+                TotalDlcCount = game.Parent.Dlcs.Count
+            };
+            profileAdditions.Add(parentCopy);
+        }
+
+        var profileGame = new Game
+        {
+            AppId = game.AppId,
+            Name = game.Name,
+            Type = game.Type,
+            IconUrl = game.IconUrl,
+            Depots = game.Depots,
+            ParentAppId = parentAppId,
+            // The search already discovered this game's DLCs, so its total is known immediately
+            // (otherwise the "x/x DLC" badge would only appear after a profile reload).
+            TotalDlcCount = game.Dlcs.Count
+        };
+
+        profileAdditions.Add(profileGame);
+        var addedGames = _gameListController.AddGames(profileAdditions);
+        _profileController.CurrentProfile.Games.Add(profileGame);
+        game.IsInProfile = true;
         _profileController.SaveCurrentProfile();
+        _gameListController.RefreshDlcGrouping();
+        _searchController.RefreshProfileFlags();
+        if (addedGames.Contains(profileGame))
+            _gameListController.HighlightSearchAddedGame(profileGame);
 
         _ = Task.Run(async () =>
         {
@@ -505,7 +621,37 @@ public partial class MainWindow
         _gameListController.RemoveGame(game);
         _profileController.CurrentProfile?.Games.Remove(game);
         _profileController.SaveCurrentProfile();
+        _gameListController.RefreshDlcGrouping();
+        _searchController.RefreshProfileFlags();
         _notificationManager.ShowToast($"Removed '{game.Name}'");
+    }
+
+    private async void AddAllDlcToProfileMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: Game game })
+            return;
+
+        await _profileController.AddAllDlcsAsync(game);
+    }
+
+    private async void AddAllDlcFromSearchMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: Game game })
+            return;
+
+        if (_profileController.CurrentProfile == null)
+        {
+            _notificationManager.ShowToast("No profile selected", false);
+            return;
+        }
+
+        // From the search pane, add the base game too when it is not already in the profile.
+        if (!_gameListController.Games.Any(g => g.AppId == game.AppId))
+            OnSearchResultSelected(game);
+
+        var latestAddedDlc = await _profileController.AddAllDlcsAsync(game);
+        if (latestAddedDlc != null)
+            _gameListController.HighlightSearchAddedGame(latestAddedDlc);
     }
 
     // ─── Import AppList ───────────────────────────────────────────────

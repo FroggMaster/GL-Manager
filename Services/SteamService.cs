@@ -371,7 +371,7 @@ public sealed class SteamService : IDisposable
         _ = task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.NotOnRanToCompletion);
     }
 
-    private static string MapSteamTypeToDisplayType(string steamType)
+    public static string MapSteamTypeToDisplayType(string steamType)
     {
         return steamType.ToLower() switch
         {
