@@ -8,10 +8,32 @@ namespace GreenLuma_Manager.Dialogs;
 
 public partial class CreateProfileDialog
 {
+    private readonly bool _isRename;
+
     public CreateProfileDialog()
+        : this(isRename: false, initialName: null)
+    {
+    }
+
+    public CreateProfileDialog(bool isRename, string? initialName)
     {
         InitializeComponent();
         Result = null;
+        _isRename = isRename;
+
+        if (_isRename)
+        {
+            Title = "Rename Profile";
+            TxtHeader.Text = "RENAME PROFILE";
+            BtnConfirm.Content = "RENAME";
+        }
+
+        if (!string.IsNullOrEmpty(initialName))
+        {
+            TxtProfileName.Text = initialName;
+            TxtProfileName.SelectAll();
+        }
+
         TxtProfileName.Focus();
         PreviewKeyDown += OnPreviewKeyDown;
     }
@@ -58,7 +80,7 @@ public partial class CreateProfileDialog
         if (!ValidateProfileName(profileName))
             return;
 
-        Logger.Info($"Profile created: '{profileName}'");
+        Logger.Info(_isRename ? $"Profile rename requested: '{profileName}'" : $"Profile created: '{profileName}'");
         Result = new Profile { Name = profileName };
         DialogResult = true;
         Close();

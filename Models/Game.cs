@@ -223,8 +223,6 @@ public class Game : INotifyPropertyChanged
         OnPropertyChanged(nameof(ProfileDlcLabel));
         OnPropertyChanged(nameof(HasProfileDlcLabel));
     }
-
-
     public event PropertyChangedEventHandler? PropertyChanged;
 
     protected void OnPropertyChanged(string propertyName)

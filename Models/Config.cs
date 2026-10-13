@@ -17,6 +17,18 @@ public class Config
 
     [DataMember] public string LastProfile { get; set; } = "default";
 
+    /// <summary>
+    /// Name of the profile the on-disk AppList.ini was generated for.
+    /// Empty means unknown (existing users), which is treated as stale.
+    /// </summary>
+    [DataMember] public string LastAppListProfile { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Fingerprint of the profile state that produced the on-disk AppList.ini.
+    /// Empty means unknown (existing users), which is treated as stale.
+    /// </summary>
+    [DataMember] public string LastAppListFingerprint { get; set; } = string.Empty;
+
     [DataMember(Name = "check_greenluma_updates")] public bool CheckGreenLumaUpdates { get; set; } = true;
 
     [DataMember] public string GreenLumaUsername { get; set; } = string.Empty;

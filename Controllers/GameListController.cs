@@ -7,6 +7,7 @@ using System.Windows.Data;
 using System.Windows.Threading;
 using GreenLuma_Manager.Models;
 using GreenLuma_Manager.Services;
+using GreenLuma_Manager.Utilities;
 
 namespace GreenLuma_Manager.Controllers;
 
@@ -17,12 +18,13 @@ public class GameListController
     private readonly UIElement _pnlEmptyGames;
     private readonly NotificationManager _notificationManager;
     private readonly Dispatcher _dispatcher;
-    private static readonly TimeSpan HighlightDuration = TimeSpan.FromMilliseconds(1500);
     private ICollectionView? _gamesView;
     private string? _searchFilter;
     private string? _typeFilter;
     private DispatcherTimer? _highlightTimer;
     private Game? _highlightedGame;
+
+    private static readonly TimeSpan HighlightDuration = TimeSpan.FromMilliseconds(1500);
 
     public ObservableCollection<Game> Games { get; }
     public string? EditingOriginalName { get; set; }
@@ -264,7 +266,8 @@ public class GameListController
             new Action(() =>
             {
                 _lstGames.UpdateLayout();
-                (_lstGames.ItemContainerGenerator.ContainerFromItem(game) as FrameworkElement)?.BringIntoView();
+                SmoothScroll.BringIntoView(
+                    _lstGames.ItemContainerGenerator.ContainerFromItem(game) as FrameworkElement);
             }));
 
         var timer = new DispatcherTimer { Interval = HighlightDuration };

@@ -658,6 +658,14 @@
                 <Setter Property="Height" Value="54" />
             </Style>
 
+            <Style
+                x:Key="DangerButton"
+                BasedOn="{StaticResource PrimaryButton}"
+                TargetType="Button">
+                <Setter Property="Background" Value="{StaticResource Danger}" />
+                <Setter Property="Foreground" Value="{StaticResource Text}" />
+            </Style>
+
             <Style x:Key="HeaderButton" TargetType="Button">
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
@@ -1921,6 +1929,20 @@
                                             </MenuItem.Icon>
                                         </MenuItem>
 
+                                        <MenuItem
+                                            Click="RenameProfileButton_Click"
+                                            Header="Rename Profile"
+                                            Style="{StaticResource ContextMenuItem}">
+                                            <MenuItem.Icon>
+                                                <Path
+                                                    Width="16"
+                                                    Height="16"
+                                                    Data="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"
+                                                    Fill="{StaticResource TextSecondary}"
+                                                    Stretch="Uniform" />
+                                            </MenuItem.Icon>
+                                        </MenuItem>
+
                                         <Separator>
                                             <Separator.Style>
                                                 <Style TargetType="Separator">
@@ -2698,6 +2720,7 @@
                             Style="{StaticResource PrimaryButton}">
                             <StackPanel Orientation="Horizontal">
                                 <Path
+                                    x:Name="IcoLaunchGreenluma"
                                     Width="18"
                                     Height="18"
                                     Margin="0,0,10,0"
@@ -2705,6 +2728,7 @@
                                     Fill="{StaticResource BackgroundDark}"
                                     Stretch="Uniform" />
                                 <TextBlock
+                                    x:Name="LblLaunchGreenluma"
                                     VerticalAlignment="Center"
                                     FontWeight="SemiBold"
                                     Text="LAUNCH GREENLUMA" />

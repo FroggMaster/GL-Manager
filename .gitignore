@@ -91,3 +91,4 @@ ServiceFabricBackup/
 .opencode/
 .sisyphus/
 logs/
+/AGENTS.md
