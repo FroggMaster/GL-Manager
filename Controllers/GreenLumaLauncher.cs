@@ -272,28 +272,5 @@ public class GreenLumaLauncher
     }
 
     private static bool RunSteamDirectly(string? steamPath)
-    {
-        if (string.IsNullOrWhiteSpace(steamPath))
-        {
-            Logger.Error("SteamPath is null or empty, cannot launch Steam directly");
-            return false;
-        }
-
-        var steamExe = Path.Combine(steamPath, "Steam.exe");
-        if (!File.Exists(steamExe))
-        {
-            Logger.Error($"Steam.exe not found at '{steamExe}'");
-            return false;
-        }
-
-        Logger.Info($"Launching Steam.exe directly from '{steamPath}'");
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = steamExe,
-            WorkingDirectory = steamPath,
-            UseShellExecute = true
-        });
-
-        return true;
-    }
+        => GreenLumaService.StartSteamDirectly(steamPath);
 }

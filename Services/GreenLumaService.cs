@@ -871,7 +871,14 @@ public partial class GreenLumaService
             {
                 Logger.Info("CLI launch started");
 
-                if (!ValidatePaths(config))
+                if (method == GreenLumaInstallMethod.None)
+                {
+                    Logger.Error("No GreenLuma installation detected, aborting CLI launch");
+                    LaunchDiagnostics.EndRun(false, "no GreenLuma installation detected");
+                    return false;
+                }
+
+                if (!ValidatePaths(config, method))
                 {
                     LaunchDiagnostics.EndRun(false, "path validation failed");
                     return false;
@@ -905,10 +912,10 @@ public partial class GreenLumaService
                     {
                         KillSteam(config);
 
-                        if (!LaunchInjector(config))
+                        if (!LaunchByMethod(config, method))
                         {
-                            Logger.Error($"CLI launch attempt {attempt}: injector failed to start");
-                            LaunchDiagnostics.Line($"CLI launch attempt {attempt}: injector failed to start");
+                            Logger.Error($"CLI launch attempt {attempt} failed: method: {method}");
+                            LaunchDiagnostics.Line($"CLI launch attempt {attempt} failed: method: {method}");
                             continue;
                         }
                     }
@@ -927,8 +934,8 @@ public partial class GreenLumaService
                 }
 
                 LaunchDiagnostics.EndRun(result, result
-                    ? "DLLInjector started and Steam was running at end of watch"
-                    : "DLLInjector failed, or Steam was not running at end of watch");
+                    ? $"Steam launched and stayed alive ({method})"
+                    : $"launch failed or Steam did not stay alive ({method})");
                 return result;
             }
             catch (Exception ex)
@@ -940,32 +947,64 @@ public partial class GreenLumaService
         });
     }
 
-    private static bool ValidatePaths(Config config)
+    private static bool ValidatePaths(Config config, GreenLumaInstallMethod method)
     {
-        if (string.IsNullOrWhiteSpace(config.SteamPath) ||
-            string.IsNullOrWhiteSpace(config.GreenLumaPath))
+        // Mirrors the GUI launcher's validation: only the files the detected
+        // method actually needs are required. User32 mode needs no
+        // DLLInjector.exe, so a User32-only install must not fail here.
+        var valid = method switch
         {
-            Logger.Warn($"CLI path validation failed: SteamPath or GreenLumaPath is empty (SteamPath='{config.SteamPath}' GreenLumaPath='{config.GreenLumaPath}')");
-            return false;
+            GreenLumaInstallMethod.Normal =>
+                !string.IsNullOrWhiteSpace(config.SteamPath) &&
+                File.Exists(Path.Combine(config.SteamPath, "Steam.exe")) &&
+                File.Exists(Path.Combine(config.SteamPath, "DLLInjector.exe")) &&
+                HasGreenLumaDll(config.SteamPath),
+
+            GreenLumaInstallMethod.StealthAny =>
+                !string.IsNullOrWhiteSpace(config.SteamPath) &&
+                !string.IsNullOrWhiteSpace(config.GreenLumaPath) &&
+                File.Exists(Path.Combine(config.SteamPath, "Steam.exe")) &&
+                File.Exists(Path.Combine(config.GreenLumaPath, "DLLInjector.exe")) &&
+                HasGreenLumaDll(config.GreenLumaPath),
+
+            GreenLumaInstallMethod.User32 =>
+                !string.IsNullOrWhiteSpace(config.SteamPath) &&
+                File.Exists(Path.Combine(config.SteamPath, "Steam.exe")) &&
+                File.Exists(Path.Combine(config.SteamPath, "user32.dll")),
+
+            _ => false
+        };
+
+        if (!valid)
+        {
+            Logger.Warn($"CLI path validation failed for method={method} (SteamPath='{config.SteamPath}' GreenLumaPath='{config.GreenLumaPath}')");
         }
 
-        var steamExePath = Path.Combine(config.SteamPath, "Steam.exe");
-        var injectorPath = Path.Combine(config.GreenLumaPath, "DLLInjector.exe");
-
-        var steamExists = File.Exists(steamExePath);
-        var injectorExists = File.Exists(injectorPath);
-
-        if (!steamExists || !injectorExists)
-        {
-            Logger.Warn($"CLI path validation failed: Steam.exe exists={steamExists} DLLInjector.exe exists={injectorExists}");
-        }
-
-        return steamExists && injectorExists;
+        return valid;
     }
 
-    private static bool LaunchInjector(Config config)
+    /// <summary>
+    /// Starts the launch action for the detected install method. In User32
+    /// mode the deployed user32.dll is a system DLL that the Windows loader
+    /// resolves automatically with the Steam process, so Steam.exe is started
+    /// directly and no DLLInjector is involved. Injector modes start
+    /// DLLInjector.exe from the folder detected by <see cref="DetectInstallMethod"/>,
+    /// same as the GUI launcher.
+    /// </summary>
+    private static bool LaunchByMethod(Config config, GreenLumaInstallMethod method)
     {
-        var injectorPath = Path.Combine(config.GreenLumaPath, "DLLInjector.exe");
+        return method switch
+        {
+            GreenLumaInstallMethod.User32 => StartSteamDirectly(config.SteamPath),
+            GreenLumaInstallMethod.Normal => LaunchInjector(config, config.SteamPath),
+            GreenLumaInstallMethod.StealthAny => LaunchInjector(config, config.GreenLumaPath),
+            _ => false
+        };
+    }
+
+    private static bool LaunchInjector(Config config, string injectorDir)
+    {
+        var injectorPath = Path.Combine(injectorDir, "DLLInjector.exe");
 
         if (!File.Exists(injectorPath))
         {
@@ -975,10 +1014,50 @@ public partial class GreenLumaService
         }
 
         Logger.Info("CLI launch: updating DLLInjector.ini");
-        UpdateInjectorIni(config);
+        UpdateInjectorIni(config, injectorDir);
 
-        Logger.Info($"CLI launch: starting DLLInjector.exe from '{config.GreenLumaPath}'");
-        return StartInjector(injectorPath, config.GreenLumaPath);
+        Logger.Info($"CLI launch: starting DLLInjector.exe from '{injectorDir}'");
+        return StartInjector(injectorPath, injectorDir);
+    }
+
+    /// <summary>
+    /// Starts Steam.exe directly from the Steam folder. Used for User32 mode,
+    /// where no DLLInjector is needed.
+    /// </summary>
+    internal static bool StartSteamDirectly(string? steamPath)
+    {
+        if (string.IsNullOrWhiteSpace(steamPath))
+        {
+            Logger.Error("SteamPath is null or empty, cannot launch Steam directly");
+            return false;
+        }
+
+        var steamExe = Path.Combine(steamPath, "Steam.exe");
+        if (!File.Exists(steamExe))
+        {
+            Logger.Error($"Steam.exe not found at '{steamExe}'");
+            return false;
+        }
+
+        Logger.Info($"Launching Steam.exe directly from '{steamPath}'");
+        LaunchDiagnostics.Step($"Launching Steam.exe directly from '{steamPath}'");
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = steamExe,
+                WorkingDirectory = steamPath,
+                UseShellExecute = true
+            });
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to start Steam.exe");
+            LaunchDiagnostics.Line($"!! Steam.exe launch FAILED: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
