@@ -18,7 +18,7 @@ public partial class PathDetector
             Directory.CreateDirectory(path);
     }
 
-    [GeneratedRegex(@"GreenLuma_(\d{4})_x(64|86)\.dll", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"GreenLuma(?:RE)?_(\d{4})_x(64|86)\.dll", RegexOptions.IgnoreCase)]
     public static partial Regex GreenLumaDll();
 
     // ── Application data directories ──────────────────────────────────────────
@@ -162,7 +162,8 @@ public partial class PathDetector
 
         try
         {
-            var files = Directory.GetFiles(directory, "GreenLuma_*_x*.dll");
+            var files = Directory.GetFiles(directory, "GreenLuma_*_x*.dll")
+                .Concat(Directory.GetFiles(directory, "GreenLumaRE_*_x*.dll"));
             foreach (var file in files)
             {
                 if (GreenLumaDll().IsMatch(Path.GetFileName(file)))

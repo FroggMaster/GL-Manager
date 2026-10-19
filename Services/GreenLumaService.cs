@@ -82,7 +82,8 @@ public partial class GreenLumaService
         string? dllPath = null;
         try
         {
-            var dllFiles = Directory.GetFiles(path, "GreenLuma_*_x*.dll");
+            var dllFiles = Directory.GetFiles(path, "GreenLuma_*_x*.dll")
+                .Concat(Directory.GetFiles(path, "GreenLumaRE_*_x*.dll"));
             foreach (var file in dllFiles)
             {
                 var match = PathDetector.GreenLumaDll().Match(Path.GetFileName(file));
@@ -190,13 +191,15 @@ public partial class GreenLumaService
     }
 
     /// <summary>
-    /// Returns true when the given path contains at least one GreenLuma_*_x*.dll.
+    /// Returns true when the given path contains at least one GreenLuma_*_x*.dll
+    /// or GreenLumaRE_*_x*.dll.
     /// </summary>
     public static bool HasGreenLumaDll(string path)
     {
         try
         {
-            return Directory.EnumerateFiles(path, "GreenLuma_*_x*.dll").Any();
+            return Directory.EnumerateFiles(path, "GreenLuma_*_x*.dll").Any()
+                || Directory.EnumerateFiles(path, "GreenLumaRE_*_x*.dll").Any();
         }
         catch
         {

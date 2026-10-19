@@ -319,7 +319,7 @@ public static partial class GreenLumaDeploymentService
 
     // ── Year detection ──────────────────────────────────────────────
 
-    [GeneratedRegex(@"GreenLuma_(\d{4})_", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"GreenLuma(?:RE)?_(\d{4})_", RegexOptions.IgnoreCase)]
     private static partial Regex YearRegex();
 
     private static string? DetectYearFromFiles(IEnumerable<string> fileNames)
