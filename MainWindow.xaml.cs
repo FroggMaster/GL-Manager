@@ -644,6 +644,41 @@ public partial class MainWindow
         await _profileController.AddAllDlcsAsync(game);
     }
 
+    private void RemoveAllDlcsMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: Game game })
+            return;
+
+        var removedDlcCount = _gameListController.RemoveAllDlcs(game);
+        if (removedDlcCount == 0)
+        {
+            _notificationManager.ShowToast($"No DLC in your profile for '{game.Name}'", false);
+            return;
+        }
+
+        _profileController.SaveCurrentProfile();
+        _searchController.RefreshProfileFlags();
+
+        var word = removedDlcCount == 1 ? "DLC" : "DLCs";
+        _notificationManager.ShowToast($"Removed {removedDlcCount} {word} for '{game.Name}'");
+    }
+
+    private void RemoveGameWithDlcsMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: Game game })
+            return;
+
+        var removedDlcCount = _gameListController.RemoveAllDlcs(game);
+        _gameListController.RemoveGame(game);
+        _profileController.SaveCurrentProfile();
+        _searchController.RefreshProfileFlags();
+
+        var toast = removedDlcCount > 0
+            ? $"Removed '{game.Name}' and {removedDlcCount} {(removedDlcCount == 1 ? "DLC" : "DLCs")}"
+            : $"Removed '{game.Name}'";
+        _notificationManager.ShowToast(toast);
+    }
+
     private async void AddAllDlcFromSearchMenuItem_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem { Tag: Game game })

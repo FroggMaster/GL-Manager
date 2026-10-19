@@ -222,16 +222,42 @@ public class GameListController
         else
             Games.Remove(game);
 
-        // Drop virtual parents that no longer have any DLCs in the profile.
+        RemoveOrphanVirtualParents();
+
+        PopulateDlcLinks();
+        _notificationManager.UpdateGameCount(Games.Count);
+        UpdateGameListState();
+    }
+
+    /// <summary>
+    /// Removes every DLC in the profile that belongs to the given base game. Returns the number of
+    /// DLC entries removed.
+    /// </summary>
+    public int RemoveAllDlcs(Game game)
+    {
+        var dlcs = Games
+            .Where(g => string.Equals(g.ParentAppId, game.AppId, StringComparison.Ordinal))
+            .ToList();
+
+        foreach (var dlc in dlcs)
+            Games.Remove(dlc);
+
+        RemoveOrphanVirtualParents();
+
+        PopulateDlcLinks();
+        _notificationManager.UpdateGameCount(Games.Count);
+        UpdateGameListState();
+        return dlcs.Count;
+    }
+
+    /// <summary>Drops virtual parents that no longer have any DLCs in the profile.</summary>
+    private void RemoveOrphanVirtualParents()
+    {
         foreach (var virtualParent in Games.Where(g => g.IsVirtual &&
                      !Games.Any(d => string.Equals(d.ParentAppId, g.AppId, StringComparison.Ordinal))).ToList())
         {
             Games.Remove(virtualParent);
         }
-
-        PopulateDlcLinks();
-        _notificationManager.UpdateGameCount(Games.Count);
-        UpdateGameListState();
     }
 
     public void LoadGames(IEnumerable<Game> games)

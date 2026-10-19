@@ -2170,6 +2170,55 @@
                                                                         Stretch="Uniform" />
                                                                 </MenuItem.Icon>
                                                             </MenuItem>
+
+                                                            <MenuItem
+                                                                Click="RemoveAllDlcsMenuItem_Click"
+                                                                Header="Remove All DLC"
+                                                                Tag="{Binding}">
+                                                                <MenuItem.Style>
+                                                                    <Style BasedOn="{StaticResource DangerMenuItem}" TargetType="MenuItem">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding IsDlc}" Value="True">
+                                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding HasDlcs}" Value="False">
+                                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </MenuItem.Style>
+                                                                <MenuItem.Icon>
+                                                                    <Path
+                                                                        Width="16"
+                                                                        Height="16"
+                                                                        Data="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                                                                        Fill="{StaticResource Danger}"
+                                                                        Stretch="Uniform" />
+                                                                </MenuItem.Icon>
+                                                            </MenuItem>
+
+                                                            <MenuItem
+                                                                Click="RemoveGameWithDlcsMenuItem_Click"
+                                                                Header="Remove Game + All DLC"
+                                                                Tag="{Binding}">
+                                                                <MenuItem.Style>
+                                                                    <Style BasedOn="{StaticResource DangerMenuItem}" TargetType="MenuItem">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding IsDlc}" Value="True">
+                                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </MenuItem.Style>
+                                                                <MenuItem.Icon>
+                                                                    <Path
+                                                                        Width="16"
+                                                                        Height="16"
+                                                                        Data="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                                                                        Fill="{StaticResource Danger}"
+                                                                        Stretch="Uniform" />
+                                                                </MenuItem.Icon>
+                                                            </MenuItem>
                                                         </ContextMenu>
                                                     </Border.ContextMenu>
                                                     <Border.Style>

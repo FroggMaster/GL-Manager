@@ -218,6 +218,7 @@ public class Game : INotifyPropertyChanged
     /// <summary>Notifies that the derived DLC indicators changed (after DLCs are linked).</summary>
     public void NotifyDlcIndicatorsChanged()
     {
+        OnPropertyChanged(nameof(HasDlcs));
         OnPropertyChanged(nameof(SearchDlcLabel));
         OnPropertyChanged(nameof(HasSearchDlcLabel));
         OnPropertyChanged(nameof(ProfileDlcLabel));
