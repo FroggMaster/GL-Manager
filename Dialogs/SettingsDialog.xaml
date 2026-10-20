@@ -1,4 +1,4 @@
-﻿<Window
+<Window
     x:Class="GreenLuma_Manager.Dialogs.SettingsDialog"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -6,9 +6,9 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     Title="Settings"
     Width="950"
-    Height="680"
+    Height="820"
     MinWidth="850"
-    MinHeight="930"
+    MinHeight="600"
     Background="#FF1A1A1A"
     Foreground="#FFF"
     ResizeMode="CanResize"
@@ -794,21 +794,27 @@
                         Margin="0,6,0,0"
                         FontSize="13"
                         Foreground="{StaticResource TextTertiary}"
-                        Text="Preferences &amp; Config" />
+                        Text="GreenLuma Manager" />
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Margin="16,0">
                     <RadioButton
-                        x:Name="NavGeneral"
+                        x:Name="NavInstallation"
                         Checked="Nav_Checked"
-                        Content="General"
+                        Content="Installation"
                         GroupName="Nav"
                         IsChecked="True"
                         Style="{StaticResource NavRadioButton}" />
                     <RadioButton
-                        x:Name="NavSystem"
+                        x:Name="NavStartupSearch"
                         Checked="Nav_Checked"
-                        Content="System"
+                        Content="Startup &amp; Search"
+                        GroupName="Nav"
+                        Style="{StaticResource NavRadioButton}" />
+                    <RadioButton
+                        x:Name="NavUpdates"
+                        Checked="Nav_Checked"
+                        Content="Updates"
                         GroupName="Nav"
                         Style="{StaticResource NavRadioButton}" />
                     <RadioButton
@@ -842,10 +848,16 @@
 
             <Border Grid.Row="0" Background="Transparent" />
 
-            <Grid Grid.Row="1" Margin="40,0,40,40">
+            <ScrollViewer
+                Grid.Row="1"
+                Margin="40,0,40,40"
+                Padding="0,0,12,0"
+                HorizontalScrollBarVisibility="Disabled"
+                VerticalScrollBarVisibility="Auto">
+            <Grid>
 
                 <Grid
-                    x:Name="ViewGeneral"
+                    x:Name="ViewInstallation"
                     RenderTransformOrigin="0.5,0.5"
                     Style="{StaticResource FadePanel}"
                     Visibility="Visible">
@@ -859,12 +871,12 @@
                             FontSize="24"
                             FontWeight="SemiBold"
                             Foreground="{StaticResource Text}"
-                            Text="General" />
+                            Text="Installation" />
                         <TextBlock
                             Margin="0,0,0,24"
                             FontSize="14"
                             Foreground="{StaticResource TextSecondary}"
-                            Text="Configure your installation paths." />
+                            Text="Configure paths and injection mode." />
 
                         <Border
                             Padding="24"
@@ -951,9 +963,22 @@
                                         SelectionChanged="GreenLumaMode_SelectionChanged">
                                         <ComboBoxItem Tag="">Auto-Detect</ComboBoxItem>
                                         <ComboBoxItem Tag="Normal">Normal</ComboBoxItem>
-                                        <ComboBoxItem Tag="StealthAny">StealthAny</ComboBoxItem>
+                                        <ComboBoxItem Tag="StealthAny">Stealth (Any Folder)</ComboBoxItem>
                                         <ComboBoxItem Tag="User32">User32</ComboBoxItem>
                                     </ComboBox>
+                                </StackPanel>
+
+                                <StackPanel Margin="0,20,0,0">
+                                    <CheckBox
+                                        x:Name="ChkStealthMode"
+                                        Content="Stealth Mode"
+                                        Style="{StaticResource ToggleSwitch}" />
+                                    <TextBlock
+                                        Margin="0,4,60,0"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Hides the DLLInjector injection process. Forced on when using StealthAny."
+                                        TextWrapping="Wrap" />
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -961,7 +986,7 @@
                 </Grid>
 
                 <Grid
-                    x:Name="ViewSystem"
+                    x:Name="ViewStartupSearch"
                     RenderTransformOrigin="0.5,0.5"
                     Style="{StaticResource FadePanel}"
                     Visibility="Collapsed">
@@ -975,12 +1000,12 @@
                             FontSize="24"
                             FontWeight="SemiBold"
                             Foreground="{StaticResource Text}"
-                            Text="System" />
+                            Text="Startup &amp; Search" />
                         <TextBlock
                             Margin="0,0,0,24"
                             FontSize="14"
                             Foreground="{StaticResource TextSecondary}"
-                            Text="Manage application behavior and updates." />
+                            Text="Startup behavior and Steam search." />
 
                         <Border
                             Margin="0,0,0,20"
@@ -996,29 +1021,16 @@
                                     FontWeight="Bold"
                                     Foreground="{StaticResource TextTertiary}"
                                     Text="STARTUP" />
-                                <StackPanel Margin="0,0,0,24">
-                                    <CheckBox
-                                        x:Name="ChkReplaceSteamAutostart"
-                                        Content="Replace Steam on Windows Startup"
-                                        Style="{StaticResource ToggleSwitch}" />
-                                    <TextBlock
-                                        Margin="0,4,60,0"
-                                        FontSize="13"
-                                        Foreground="{StaticResource TextTertiary}"
-                                        Text="Launch GreenLuma Manager automatically when Windows starts, replacing the default Steam startup."
-                                        TextWrapping="Wrap" />
-                                </StackPanel>
-
                                 <StackPanel>
                                     <CheckBox
-                                        x:Name="ChkPrefetchAppList"
-                                        Content="Prefetch Steam App List"
+                                        x:Name="ChkReplaceSteamAutostart"
+                                        Content="Launch GreenLuma Manager at Windows Startup"
                                         Style="{StaticResource ToggleSwitch}" />
                                     <TextBlock
                                         Margin="0,4,60,0"
                                         FontSize="13"
                                         Foreground="{StaticResource TextTertiary}"
-                                        Text="Speed up the App Search by prefetching all Steam Apps when GreenLuma Manager starts."
+                                        Text="Replaces Steam's startup entry so GreenLuma Manager launches when Windows starts."
                                         TextWrapping="Wrap" />
                                 </StackPanel>
                             </StackPanel>
@@ -1054,6 +1066,88 @@
                                         Text="Optional. Enables local app search by fetching the full Steam app list. Get a free key at steamcommunity.com/dev/apikey. Leave empty to disable."
                                         TextWrapping="Wrap" />
                                 </StackPanel>
+
+                                <StackPanel Margin="0,20,0,0">
+                                    <CheckBox
+                                        x:Name="ChkPrefetchAppList"
+                                        Content="Prefetch Steam App List"
+                                        Style="{StaticResource ToggleSwitch}" />
+                                    <TextBlock
+                                        Margin="0,4,60,0"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Prefetch the full Steam app list at startup to speed up local search."
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                    </StackPanel>
+                </Grid>
+
+                <Grid
+                    x:Name="ViewUpdates"
+                    RenderTransformOrigin="0.5,0.5"
+                    Style="{StaticResource FadePanel}"
+                    Visibility="Collapsed">
+                    <Grid.RenderTransform>
+                        <TranslateTransform />
+                    </Grid.RenderTransform>
+
+                    <StackPanel>
+                        <TextBlock
+                            Margin="0,0,0,4"
+                            FontSize="24"
+                            FontWeight="SemiBold"
+                            Foreground="{StaticResource Text}"
+                            Text="Updates" />
+                        <TextBlock
+                            Margin="0,0,0,24"
+                            FontSize="14"
+                            Foreground="{StaticResource TextSecondary}"
+                            Text="Keep GreenLuma Manager and GreenLuma up to date." />
+
+                        <Border
+                            Margin="0,0,0,20"
+                            Padding="24"
+                            Background="{StaticResource BackgroundSurface}"
+                            BorderBrush="{StaticResource Border}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock
+                                    Margin="0,0,0,20"
+                                    FontSize="12"
+                                    FontWeight="Bold"
+                                    Foreground="{StaticResource TextTertiary}"
+                                    Text="GREENLUMA MANAGER" />
+                                <StackPanel Margin="0,0,0,24">
+                                    <CheckBox
+                                        x:Name="ChkCheckManagerUpdates"
+                                        Checked="ManagerUpdateCheck_Changed"
+                                        Content="Check for GreenLuma Manager Updates"
+                                        Style="{StaticResource ToggleSwitch}"
+                                        Unchecked="ManagerUpdateCheck_Changed" />
+                                    <TextBlock
+                                        Margin="0,4,60,0"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Check for new versions of GreenLuma Manager on startup."
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
+
+                                <StackPanel>
+                                    <CheckBox
+                                        x:Name="ChkAutoUpdate"
+                                        Content="Install GreenLuma Manager Updates Automatically"
+                                        Style="{StaticResource ToggleSwitch}" />
+                                    <TextBlock
+                                        Margin="0,4,60,0"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Download and install updates automatically instead of opening the GitHub release page."
+                                        TextWrapping="Wrap" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -1069,34 +1163,7 @@
                                     FontSize="12"
                                     FontWeight="Bold"
                                     Foreground="{StaticResource TextTertiary}"
-                                    Text="UPDATES" />
-                                <StackPanel Margin="0,0,0,24">
-                                    <CheckBox
-                                        x:Name="ChkDisableUpdateCheck"
-                                        Checked="DisableUpdateCheck_Changed"
-                                        Content="Disable Update Checking"
-                                        Style="{StaticResource ToggleSwitch}"
-                                        Unchecked="DisableUpdateCheck_Changed" />
-                                    <TextBlock
-                                        Margin="0,4,60,0"
-                                        FontSize="13"
-                                        Foreground="{StaticResource TextTertiary}"
-                                        Text="Prevent the application from checking for new versions on startup."
-                                        TextWrapping="Wrap" />
-                                </StackPanel>
-
-                                <StackPanel Margin="0,0,0,24">
-                                    <CheckBox
-                                        x:Name="ChkAutoUpdate"
-                                        Content="Auto-Install Updates"
-                                        Style="{StaticResource ToggleSwitch}" />
-                                    <TextBlock
-                                        Margin="0,4,60,0"
-                                        FontSize="13"
-                                        Foreground="{StaticResource TextTertiary}"
-                                        Text="Download and install updates automatically instead of being redirected to the GitHub page."
-                                        TextWrapping="Wrap" />
-                                </StackPanel>
+                                    Text="GREENLUMA" />
 
                                 <StackPanel>
                                     <CheckBox
@@ -1108,6 +1175,17 @@
                                         FontSize="13"
                                         Foreground="{StaticResource TextTertiary}"
                                         Text="Notify when a newer version of GreenLuma is available on cs.rin.ru."
+                                        TextWrapping="Wrap" />
+                                    <TextBlock
+                                        Margin="0,0,0,8"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextSecondary}"
+                                        Text="cs.rin.ru Account" />
+                                    <TextBlock
+                                        Margin="0,0,0,12"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Used to download GreenLuma releases from cs.rin.ru."
                                         TextWrapping="Wrap" />
                                     <Grid Margin="0,16,0,0">
                                         <Grid.RowDefinitions>
@@ -1147,6 +1225,12 @@
                                             Style="{StaticResource InputPasswordBox}"
                                             PasswordChanged="GreenLumaCredential_Changed" />
                                     </Grid>
+                                    <TextBlock
+                                        Margin="0,8,0,0"
+                                        FontSize="12"
+                                        Foreground="{StaticResource TextTertiary}"
+                                        Text="Credentials are saved automatically so you can check or download without closing Settings."
+                                        TextWrapping="Wrap" />
                                     <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                                         <Button
                                             x:Name="BtnCheckGreenLumaUpdates"
@@ -1156,7 +1240,7 @@
                                             Click="CheckGreenLumaUpdates_Click" />
                                         <Button
                                             x:Name="BtnDownloadGreenLuma"
-                                            Content="Download &amp; Deploy Latest"
+                                            Content="Download and Install Latest"
                                             Style="{StaticResource StandardButton}"
                                             Margin="12,0,0,0"
                                             Padding="12,6"
@@ -1205,7 +1289,102 @@
                             Margin="0,0,0,24"
                             FontSize="14"
                             Foreground="{StaticResource TextSecondary}"
-                            Text="Dangerous actions and data management." />
+                            Text="Maintenance and destructive actions." />
+
+                        <Border
+                            Margin="0,0,0,20"
+                            Padding="24"
+                            Background="{StaticResource BackgroundSurface}"
+                            BorderBrush="{StaticResource Border}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock
+                                    Margin="0,0,0,20"
+                                    FontSize="12"
+                                    FontWeight="Bold"
+                                    Foreground="{StaticResource TextTertiary}"
+                                    Text="MAINTENANCE" />
+
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock
+                                            FontSize="15"
+                                            FontWeight="SemiBold"
+                                            Foreground="{StaticResource Text}"
+                                            Text="Application Data" />
+                                        <TextBlock
+                                            Margin="0,4,0,0"
+                                            FontSize="13"
+                                            Foreground="{StaticResource TextSecondary}"
+                                            Text="Open the folder containing configuration, profiles, plugins, icons, and logs."
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Click="OpenDataFolder_Click"
+                                        Content="Open"
+                                        Style="{StaticResource StandardButton}" />
+                                </Grid>
+
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock
+                                            FontSize="15"
+                                            FontWeight="SemiBold"
+                                            Foreground="{StaticResource Text}"
+                                            Text="Diagnostics Log" />
+                                        <TextBlock
+                                            Margin="0,4,0,0"
+                                            FontSize="13"
+                                            Foreground="{StaticResource TextSecondary}"
+                                            Text="Open the launch diagnostics log used for troubleshooting startup issues."
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Click="OpenDiagnosticsLog_Click"
+                                        Content="Open"
+                                        Style="{StaticResource StandardButton}" />
+                                </Grid>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock
+                                            FontSize="15"
+                                            FontWeight="SemiBold"
+                                            Foreground="{StaticResource Text}"
+                                            Text="Icon Cache" />
+                                        <TextBlock
+                                            Margin="0,4,0,0"
+                                            FontSize="13"
+                                            Foreground="{StaticResource TextSecondary}"
+                                            Text="Delete cached game icons. They are downloaded again when needed."
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Click="ClearIconCache_Click"
+                                        Content="Clear"
+                                        Style="{StaticResource StandardButton}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
 
                         <Border
                             Padding="24"
@@ -1249,6 +1428,7 @@
                 </Grid>
 
             </Grid>
+            </ScrollViewer>
         </Grid>
     </Grid>
 </Window>

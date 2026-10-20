@@ -35,7 +35,7 @@ public partial class SettingsDialog
     /// </summary>
     private readonly string? _originalPreferredMode;
 
-    public SettingsDialog(Config config, bool openToSystemTab = false)
+    public SettingsDialog(Config config, bool openToUpdatesTab = false)
     {
         InitializeComponent();
         Logger.Debug("SettingsDialog opened");
@@ -47,8 +47,8 @@ public partial class SettingsDialog
 
         _loaded = true;
 
-        if (openToSystemTab)
-            NavSystem.IsChecked = true;
+        if (openToUpdatesTab)
+            NavUpdates.IsChecked = true;
 
         PreviewKeyDown += OnPreviewKeyDown;
     }
@@ -58,15 +58,17 @@ public partial class SettingsDialog
         Logger.Debug("Loading settings into dialog UI");
         TxtSteamPath.Text = _config.SteamPath;
         TxtGreenLumaPath.Text = _config.GreenLumaPath;
+        ChkStealthMode.IsChecked = _config.NoHook;
         ChkReplaceSteamAutostart.IsChecked = _config.ReplaceSteamAutostart;
         ChkPrefetchAppList.IsChecked = _config.PrefetchAppList;
         TxtSteamApiKey.Text = _config.SteamApiKey;
-        ChkDisableUpdateCheck.IsChecked = _config.DisableUpdateCheck;
+        ChkCheckManagerUpdates.IsChecked = !_config.DisableUpdateCheck;
         ChkAutoUpdate.IsChecked = _config.AutoUpdate;
         ChkCheckGreenLumaUpdates.IsChecked = _config.CheckGreenLumaUpdates;
 
         UpdateGreenLumaPathUI();
         LoadGreenLumaModeSelection();
+        UpdateStealthModeState();
 
         // Set credential fields AFTER all other settings so the auto-save
         // handler (which fires on TextChanged/PasswordChanged) won't save
@@ -82,14 +84,18 @@ public partial class SettingsDialog
 
     private void Nav_Checked(object sender, RoutedEventArgs e)
     {
-        if (ViewGeneral == null || ViewSystem == null || ViewAdvanced == null) return;
+        if (ViewInstallation == null || ViewStartupSearch == null ||
+            ViewUpdates == null || ViewAdvanced == null)
+            return;
 
-        ViewGeneral.Visibility = Visibility.Collapsed;
-        ViewSystem.Visibility = Visibility.Collapsed;
+        ViewInstallation.Visibility = Visibility.Collapsed;
+        ViewStartupSearch.Visibility = Visibility.Collapsed;
+        ViewUpdates.Visibility = Visibility.Collapsed;
         ViewAdvanced.Visibility = Visibility.Collapsed;
 
-        if (NavGeneral.IsChecked == true) ShowView(ViewGeneral);
-        else if (NavSystem.IsChecked == true) ShowView(ViewSystem);
+        if (NavInstallation.IsChecked == true) ShowView(ViewInstallation);
+        else if (NavStartupSearch.IsChecked == true) ShowView(ViewStartupSearch);
+        else if (NavUpdates.IsChecked == true) ShowView(ViewUpdates);
         else if (NavAdvanced.IsChecked == true) ShowView(ViewAdvanced);
     }
 
@@ -367,6 +373,7 @@ public partial class SettingsDialog
             PanelGreenLumaDir.Opacity = 1.0;
 
             LoadGreenLumaModeSelection();
+            UpdateStealthModeState();
             return;
         }
 
@@ -405,6 +412,7 @@ public partial class SettingsDialog
             : 0.45;
 
         LoadGreenLumaModeSelection();
+        UpdateStealthModeState();
     }
 
     /// <summary>
@@ -513,6 +521,44 @@ public partial class SettingsDialog
         }
     }
 
+    private GreenLumaInstallMethod GetEffectiveMode()
+    {
+        if (CmbGreenLumaMode?.SelectedItem is ComboBoxItem { Tag: string tag } &&
+            !string.IsNullOrWhiteSpace(tag) &&
+            Enum.TryParse(tag, ignoreCase: true, out GreenLumaInstallMethod parsed))
+        {
+            return parsed;
+        }
+
+        return GreenLumaService.DetectInstallMethod(
+            NormalizePath(TxtSteamPath.Text),
+            NormalizePath(TxtGreenLumaPath.Text),
+            _config.PreferredMode);
+    }
+
+    private void UpdateStealthModeState()
+    {
+        if (ChkStealthMode == null) return;
+
+        var method = GetEffectiveMode();
+        if (method == GreenLumaInstallMethod.StealthAny)
+        {
+            ChkStealthMode.IsChecked = true;
+            ChkStealthMode.IsEnabled = false;
+            ChkStealthMode.ToolTip = "StealthAny mode always uses Stealth Mode.";
+        }
+        else if (method == GreenLumaInstallMethod.User32)
+        {
+            ChkStealthMode.IsEnabled = false;
+            ChkStealthMode.ToolTip = "Stealth Mode is not configurable while User32 mode is active.";
+        }
+        else
+        {
+            ChkStealthMode.IsEnabled = true;
+            ChkStealthMode.ToolTip = null;
+        }
+    }
+
     private void GreenLumaMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_loaded || _syncingMode) return;
@@ -521,6 +567,7 @@ public partial class SettingsDialog
         {
             var tag = item.Tag as string;
             _config.PreferredMode = string.IsNullOrEmpty(tag) ? null : tag;
+            UpdateStealthModeState();
 
             var steamPath = NormalizePath(TxtSteamPath.Text);
 
@@ -625,20 +672,111 @@ public partial class SettingsDialog
         ConfigService.Save(_config);
     }
 
-    private void DisableUpdateCheck_Changed(object sender, RoutedEventArgs e)
+    private void ManagerUpdateCheck_Changed(object sender, RoutedEventArgs e)
     {
+        if (!_loaded) return;
         UpdateAutoUpdateVisibility();
     }
 
     private void UpdateAutoUpdateVisibility()
     {
-        if (ChkAutoUpdate == null || ChkDisableUpdateCheck == null)
+        if (ChkAutoUpdate == null || ChkCheckManagerUpdates == null)
             return;
 
-        var isEnabled = !ChkDisableUpdateCheck.IsChecked.GetValueOrDefault();
+        var isEnabled = ChkCheckManagerUpdates.IsChecked.GetValueOrDefault();
         ChkAutoUpdate.IsEnabled = isEnabled;
 
         if (!isEnabled) ChkAutoUpdate.IsChecked = false;
+    }
+
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            PathDetector.EnsureExists(PathDetector.AppDataDir);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{PathDetector.AppDataDir}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to open application data folder");
+            CustomMessageBox.Show("Could not open the application data folder.", "Maintenance",
+                MessageBoxButton.OK, MessageBoxImage.Exclamation);
+        }
+    }
+
+    private void OpenDiagnosticsLog_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var logPath = LaunchDiagnostics.FilePath;
+            if (File.Exists(logPath))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{logPath}\"",
+                    UseShellExecute = true
+                });
+                return;
+            }
+
+            var logDir = Path.GetDirectoryName(logPath);
+            if (!string.IsNullOrWhiteSpace(logDir))
+            {
+                PathDetector.EnsureExists(logDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"\"{logDir}\"",
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to open diagnostics log");
+            CustomMessageBox.Show("Could not open the diagnostics log.", "Maintenance",
+                MessageBoxButton.OK, MessageBoxImage.Exclamation);
+        }
+    }
+
+    private void ClearIconCache_Click(object sender, RoutedEventArgs e)
+    {
+        if (CustomMessageBox.Show(
+                "Delete all cached game icons? Icons will be downloaded again when needed.",
+                "Clear Icon Cache",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            var iconDir = PathDetector.IconsDir;
+            var before = Directory.Exists(iconDir) ? Directory.GetFiles(iconDir).Length : 0;
+            IconCacheService.DeleteUnusedIcons(new HashSet<string>());
+            var after = Directory.Exists(iconDir) ? Directory.GetFiles(iconDir).Length : 0;
+            var cleared = before - after;
+
+            Logger.Info($"Icon cache cleared ({cleared} of {before} file(s))");
+
+            var message = before == 0
+                ? "The icon cache is already empty."
+                : cleared == before
+                    ? $"Cleared {cleared} cached icon(s)."
+                    : $"Cleared {cleared} of {before} cached icon(s). Some files were in use.";
+            CustomMessageBox.Show(message, "Clear Icon Cache", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to clear icon cache");
+            CustomMessageBox.Show("Could not clear the icon cache.", "Clear Icon Cache",
+                MessageBoxButton.OK, MessageBoxImage.Exclamation);
+        }
     }
 
     private void WipeData_Click(object sender, RoutedEventArgs e)
@@ -1251,9 +1389,15 @@ public partial class SettingsDialog
             _config.LastStealthAnyPath = _config.GreenLumaPath;
         }
 
+        var effectiveMode = GetEffectiveMode();
+        if (effectiveMode == GreenLumaInstallMethod.StealthAny)
+            _config.NoHook = true;
+        else if (effectiveMode != GreenLumaInstallMethod.User32)
+            _config.NoHook = ChkStealthMode.IsChecked.GetValueOrDefault();
+
         _config.ReplaceSteamAutostart = ChkReplaceSteamAutostart.IsChecked.GetValueOrDefault();
         _config.PrefetchAppList = ChkPrefetchAppList.IsChecked.GetValueOrDefault();
-        _config.DisableUpdateCheck = ChkDisableUpdateCheck.IsChecked.GetValueOrDefault();
+        _config.DisableUpdateCheck = !ChkCheckManagerUpdates.IsChecked.GetValueOrDefault();
         _config.AutoUpdate = ChkAutoUpdate.IsChecked.GetValueOrDefault();
         _config.CheckGreenLumaUpdates = ChkCheckGreenLumaUpdates.IsChecked.GetValueOrDefault();
         _config.GreenLumaUsername = TxtGreenLumaUsername.Text.Trim();

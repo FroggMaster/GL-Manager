@@ -116,7 +116,6 @@ public partial class MainWindow
         FocusSearchCommand = new RelayCommand(_ => TxtSearchTextBox.Focus());
         GenerateApplistCommand = new RelayCommand(_ => GenerateApplistButton_Click(BtnGenerateApplist, new RoutedEventArgs()));
         LaunchGreenlumaCommand = new RelayCommand(_ => LaunchGreenlumaButton_Click(BtnLaunchGreenluma, new RoutedEventArgs()));
-        ToggleStealthCommand = new RelayCommand(_ => TglStealthMode.IsChecked = !TglStealthMode.IsChecked.GetValueOrDefault());
 
         DataContext = this;
 
@@ -138,7 +137,6 @@ public partial class MainWindow
     public ICommand FocusSearchCommand { get; }
     public ICommand GenerateApplistCommand { get; }
     public ICommand LaunchGreenlumaCommand { get; }
-    public ICommand ToggleStealthCommand { get; }
 
     private void ConfigureSearchResultColumns()
     {
@@ -1079,7 +1077,7 @@ public partial class MainWindow
         if (!ToastMessage.Text.Contains("GreenLuma update", StringComparison.OrdinalIgnoreCase))
             return;
 
-        var dialog = new SettingsDialog(_config, openToSystemTab: true);
+        var dialog = new SettingsDialog(_config, openToUpdatesTab: true);
         dialog.Owner = this;
 
         if (dialog.ShowDialog() != true)
@@ -1252,16 +1250,11 @@ public partial class MainWindow
             TglUser32Mode.IsChecked = true;
             _syncingUser32Mode = false;
 
-            TglStealthMode.IsChecked = false;
-            TglStealthMode.IsEnabled = false;
-            BorderStealthMode.Opacity = 0.5;
             _notificationManager.SetStatusIndicator(successBrush, "Ready  •  User32 Mode");
             return;
         }
 
         // User32 DLL is either disabled or absent
-        BorderStealthMode.Opacity = 1.0;
-
         if (hasUser32DisabledDll)
         {
             _syncingUser32Mode = true;
@@ -1273,14 +1266,10 @@ public partial class MainWindow
         switch (installMethod)
         {
             case GreenLumaInstallMethod.Normal:
-                TglStealthMode.IsEnabled = true;
                 _notificationManager.SetStatusIndicator(successBrush, "Ready  •  Normal Mode");
                 break;
 
             case GreenLumaInstallMethod.StealthAny:
-                TglStealthMode.IsChecked = true;
-                TglStealthMode.IsEnabled = false;
-
                 _config.NoHook = true;
 
                 var stealthLabel = _config.NoHook
@@ -1290,7 +1279,6 @@ public partial class MainWindow
                 break;
 
             default:
-                TglStealthMode.IsEnabled = true;
                 _notificationManager.SetStatusIndicator(
                     Resources["Danger"] as Brush ?? Brushes.Red, "Not Configured");
                 break;
@@ -1321,22 +1309,6 @@ public partial class MainWindow
             GreenLumaService.DisableUser32(steamPath);
         }
 
-        ConfigService.Save(_config);
-        UpdateStatus();
-    }
-
-    private void NoHook_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_config == null || sender is not ToggleButton toggleButton)
-            return;
-
-        // Ignore stealth toggles when User32 mode is active on disk
-        var steamPath = _config.SteamPath?.Trim();
-        if (!string.IsNullOrWhiteSpace(steamPath) &&
-            File.Exists(Path.Combine(steamPath, "user32.dll")))
-            return;
-
-        _config.NoHook = toggleButton.IsChecked.GetValueOrDefault();
         ConfigService.Save(_config);
         UpdateStatus();
     }
