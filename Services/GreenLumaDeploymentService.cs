@@ -18,15 +18,19 @@ public static partial class GreenLumaDeploymentService
     /// </summary>
     /// <param name="zipPath">Full path to the downloaded .zip file.</param>
     /// <param name="greenLumaPath">GreenLuma installation directory (destination for copied files).</param>
-    /// <param name="steamPath">Steam installation directory (destination for user32.dll if applicable).</param>
+    /// <param name="steamPath">Steam installation directory (destination for the system DLL proxy if applicable).</param>
     /// <param name="forcedMethod">When set, forces a specific install method instead of auto-detecting.</param>
     /// <param name="user32DeployMode">
     /// When <paramref name="forcedMethod"/> is <see cref="GreenLumaInstallMethod.User32"/>,
     /// specifies whether to deploy the user32 DLL directly or via the SF variant.
-    /// Defaults to <see cref="User32DeployMode.User32SF"/> when omitted.
+    /// Defaults to <see cref="User32DeployMode.User32SF"/> when omitted. The SF
+    /// variant only applies to the user32.dll proxy name.
     /// </param>
     /// <param name="progressCallback">Optional callback to report status messages.</param>
     /// <param name="numericProgress">Optional callback for numeric progress (0.0 to 1.0).</param>
+    /// <param name="systemProxyDll">
+    /// Filename of the system DLL proxy to deploy. Defaults to user32.dll.
+    /// </param>
     public static async Task<GreenLumaDeploymentResult> DeployAsync(
         string zipPath,
         string greenLumaPath,
@@ -34,8 +38,10 @@ public static partial class GreenLumaDeploymentService
         GreenLumaInstallMethod? forcedMethod = null,
         User32DeployMode? user32DeployMode = null,
         Action<string>? progressCallback = null,
-        IProgress<double>? numericProgress = null)
+        IProgress<double>? numericProgress = null,
+        string? systemProxyDll = null)
     {
+        var proxyName = SystemProxyDll.Normalize(systemProxyDll);
         var result = new GreenLumaDeploymentResult();
         var tmpDir = Path.GetDirectoryName(zipPath)!;
         var extractDir = Path.Combine(tmpDir, "extracted");
@@ -48,10 +54,11 @@ public static partial class GreenLumaDeploymentService
                 "Extracting ZIP..." => 0.10,
                 "Detecting installation type..." => 0.30,
                 "Updating GreenLuma files..." => 0.60,
-                "Deploying user32.dll..." => 0.60,
                 "Cleaning up..." => 0.90,
                 "Done." => 1.0,
-                _ => 0.0
+                // Proxy deployment messages include the configured filename,
+                // so match the prefix instead of the exact legacy string.
+                _ => msg.StartsWith("Deploying ", StringComparison.Ordinal) ? 0.60 : 0.0
             };
             numericProgress?.Report(pct);
         }
@@ -129,39 +136,63 @@ public static partial class GreenLumaDeploymentService
 
             // ── Step 3: Determine installation type ─────────────────
             // Use forced method for fresh installs; otherwise auto-detect.
-            var installMethod = forcedMethod ?? GreenLumaService.DetectInstallMethod(steamPath, greenLumaPath);
+            var installMethod = forcedMethod ?? GreenLumaService.DetectInstallMethod(
+                steamPath, greenLumaPath, null, proxyName);
             Logger.Debug($" Install method: {installMethod} (forced: {forcedMethod.HasValue})");
 
-            // ── Step 4: Check user32 condition ──────────────────
-            // Only one GreenLuma implementation at a time — if user32.dll
+            // ── Step 4: Check system DLL proxy condition ─────────
+            // Only one GreenLuma implementation at a time: if a proxy DLL
             // will be deployed, skip stealth core files entirely.
-            var steamUser32Path = Path.Combine(steamPath, "user32.dll");
-            var hasUser32SfDll = availableFiles.ContainsKey("user32SF.dll");
-            var user32AlreadyDeployed = !string.IsNullOrWhiteSpace(steamPath) && File.Exists(steamUser32Path);
-            Logger.Debug($" user32SF.dll in ZIP: {hasUser32SfDll}, user32.dll in Steam: {user32AlreadyDeployed}");
+            var steamProxyPath = SystemProxyDll.GetPath(steamPath, proxyName);
+            var hasProxySource = proxyName == SystemProxyDll.DefaultName
+                ? availableFiles.ContainsKey(SystemProxyDll.DefaultName) ||
+                  availableFiles.ContainsKey("user32SF.dll")
+                : availableFiles.ContainsKey(proxyName);
+            var proxyAlreadyDeployed = !string.IsNullOrWhiteSpace(steamPath) && File.Exists(steamProxyPath);
+            Logger.Debug($" Proxy source in ZIP: {hasProxySource}, {proxyName} in Steam: {proxyAlreadyDeployed}");
 
             // ── Step 5: Deploy files based on install type ──────
             switch (installMethod)
             {
                 case GreenLumaInstallMethod.User32:
-                    if (forcedMethod == GreenLumaInstallMethod.User32 && !user32AlreadyDeployed)
+                    var proxyDeployMode = ResolveProxyDeployMode(user32DeployMode, proxyName);
+
+                    if (forcedMethod == GreenLumaInstallMethod.User32 && !proxyAlreadyDeployed)
                     {
-                        // Fresh User32 install: deploy AppListManager.exe + user32 DLL
+                        // Fresh proxy install: deploy AppListManager.exe + proxy DLL
                         Report("Updating GreenLuma files...");
                         DeployAppListManager(availableFiles, extractedYear, sourceDir, steamPath, result);
-                        var mode = user32DeployMode ?? User32DeployMode.User32SF;
-                        if (DeployUser32Dll(sourceDir, steamPath, mode))
-                            result.User32Deployed = true;
+
+                        if (DeployProxyDll(sourceDir, steamPath, proxyDeployMode, proxyName))
+                        {
+                            result.ProxyDeployed = true;
+                            result.ProxyDllName = proxyName;
+                        }
+                        else
+                        {
+                            result.ProxyWarning = hasProxySource
+                                ? $"Could not deploy {proxyName}."
+                                : $"The archive does not contain a proxy DLL named {proxyName}.";
+                        }
                     }
                     else
                     {
-                        // Existing User32 update: deploy user32.dll only
-                        Report("Deploying user32.dll...");
-                        if (hasUser32SfDll && !string.IsNullOrWhiteSpace(steamPath))
+                        // Existing proxy update: refresh the proxy DLL only.
+                        // Missing sources leave the installed proxy untouched.
+                        if (hasProxySource && !string.IsNullOrWhiteSpace(steamPath))
                         {
-                            var mode = user32DeployMode ?? User32DeployMode.User32SF;
-                            if (DeployUser32Dll(sourceDir, steamPath, mode))
-                                result.User32Deployed = true;
+                            Report($"Deploying {proxyName}...");
+                            if (DeployProxyDll(sourceDir, steamPath, proxyDeployMode, proxyName))
+                            {
+                                result.ProxyDeployed = true;
+                                result.ProxyDllName = proxyName;
+                            }
+                            else
+                                result.ProxyWarning = $"Could not deploy {proxyName}.";
+                        }
+                        else
+                        {
+                            Logger.Debug($" No archive source for {proxyName}; existing proxy left untouched");
                         }
                     }
                     break;
@@ -575,59 +606,56 @@ public static partial class GreenLumaDeploymentService
         return target;
     }
 
-    // ── user32.dll deployment ───────────────────────────────────────
+    // ── System DLL proxy deployment ─────────────────────────────────
 
     /// <summary>
-    /// Deploys the user32 DLL variant to the Steam folder based on the selected mode.
+    /// Resolves the deploy mode for the selected proxy name. The SF variant is
+    /// a user32.dll build, so every other name uses its exact archive file.
+    /// </summary>
+    private static User32DeployMode ResolveProxyDeployMode(User32DeployMode? requested, string proxyName)
+    {
+        if (proxyName != SystemProxyDll.DefaultName)
+            return User32DeployMode.User32;
+
+        return requested ?? User32DeployMode.User32SF;
+    }
+
+    /// <summary>
+    /// Deploys the configured system DLL proxy to the Steam folder.
     /// </summary>
     /// <param name="sourceDir">Extracted ZIP root.</param>
     /// <param name="steamPath">Steam directory (destination).</param>
     /// <param name="mode">
-    /// <see cref="User32DeployMode.User32"/> — copies a plain user32.dll if found,
-    /// falling back to the SF variant. <see cref="User32DeployMode.User32SF"/>
-    /// — copies user32SF.dll and renames to user32.dll.
+    /// <see cref="User32DeployMode.User32"/> copies the proxy matching the
+    /// selected name, falling back to the SF variant for user32.dll.
+    /// <see cref="User32DeployMode.User32SF"/> copies user32SF.dll and renames
+    /// it to user32.dll.
     /// </param>
-    private static bool DeployUser32Dll(string sourceDir, string steamPath, User32DeployMode mode)
+    /// <param name="proxyName">Filename of the proxy to deploy.</param>
+    private static bool DeployProxyDll(
+        string sourceDir,
+        string steamPath,
+        User32DeployMode mode,
+        string proxyName)
     {
-        string? user32Source = null;
-
-        if (mode == User32DeployMode.User32)
+        var sourcePath = SystemProxyDll.FindArchiveSource(sourceDir, mode, proxyName);
+        if (sourcePath == null)
         {
-            // Try to find a plain user32.dll first
-            user32Source = Directory.GetFiles(sourceDir, "user32.dll", SearchOption.AllDirectories)
-                .FirstOrDefault();
-
-            if (user32Source != null)
-                Logger.Debug(" Found plain user32.dll in archive");
-        }
-
-        // Fall back to user32SF.dll (works for both modes)
-        if (user32Source == null)
-        {
-            user32Source = Directory.GetFiles(sourceDir, "user32SF.dll", SearchOption.AllDirectories)
-                .FirstOrDefault();
-
-            if (user32Source != null)
-                Logger.Debug(" Using user32SF.dll as source (renaming to user32.dll)");
-        }
-
-        if (user32Source == null)
-        {
-            Logger.Debug("No user32 DLL variant found in extracted files");
+            Logger.Warn($"No archive source found for proxy '{proxyName}'");
             return false;
         }
 
-        var destPath = Path.Combine(steamPath, "user32.dll");
+        var destPath = SystemProxyDll.GetPath(steamPath, proxyName);
 
         try
         {
-            File.Copy(user32Source, destPath, overwrite: true);
-            Logger.Debug($" Deployed: user32.dll ({Path.GetFileName(user32Source)} → {destPath})");
+            File.Copy(sourcePath, destPath, overwrite: true);
+            Logger.Info($"Deployed system proxy: {Path.GetFileName(sourcePath)} -> {destPath}");
             return true;
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to deploy user32.dll");
+            Logger.Error(ex, $"Failed to deploy system proxy '{proxyName}'");
             return false;
         }
     }

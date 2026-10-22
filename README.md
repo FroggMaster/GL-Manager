@@ -18,7 +18,7 @@ A modern desktop app for managing your GreenLuma AppList. No more entering app I
 - **Auto-Start** - Option to launch with Windows and replace Steam startup
 - **Download GreenLuma** - Download and Deploy GreenLuma if forum credentials are supplied
 - **Notify of GreenLuma Updates** - Notifies the user when there are available GreenLuma updates
-- **Quick Toggle User32 Mode** - A quick toggle for GreenLuma User32 mode deployments
+- **Configurable System DLL Proxy** - Choose the proxy DLL GreenLuma loads (user32.dll, version.dll, winmm.dll, or a custom name) and quickly enable or disable it
 
 ## Getting Started
 

@@ -964,8 +964,47 @@
                                         <ComboBoxItem Tag="">Auto-Detect</ComboBoxItem>
                                         <ComboBoxItem Tag="Normal">Normal</ComboBoxItem>
                                         <ComboBoxItem Tag="StealthAny">Stealth (Any Folder)</ComboBoxItem>
-                                        <ComboBoxItem Tag="User32">User32</ComboBoxItem>
+                                        <ComboBoxItem Tag="User32">System DLL Proxy</ComboBoxItem>
                                     </ComboBox>
+                                </StackPanel>
+
+                                <StackPanel Margin="0,20,0,0">
+                                    <TextBlock
+                                        Margin="0,0,0,4"
+                                        FontSize="13"
+                                        Foreground="{StaticResource TextSecondary}"
+                                        Text="System DLL Proxy" />
+                                    <TextBlock
+                                        Style="{StaticResource DescriptionText}"
+                                        Text="The system DLL GreenLuma loads from the Steam folder. The proxy file must match this name; changing it requires redeploying GreenLuma." />
+                                    <ComboBox
+                                        x:Name="CmbSystemProxyDll"
+                                        Style="{StaticResource SettingsComboBox}"
+                                        SelectionChanged="SystemProxyDll_SelectionChanged">
+                                        <ComboBoxItem Tag="user32.dll">user32.dll</ComboBoxItem>
+                                        <ComboBoxItem Tag="version.dll">version.dll</ComboBoxItem>
+                                        <ComboBoxItem Tag="winmm.dll">winmm.dll</ComboBoxItem>
+                                        <ComboBoxItem Tag="custom">Custom...</ComboBoxItem>
+                                    </ComboBox>
+                                    <StackPanel
+                                        x:Name="PanelSystemProxyDllCustom"
+                                        Margin="0,8,0,0"
+                                        Visibility="Collapsed">
+                                        <TextBlock
+                                            Margin="0,0,0,4"
+                                            FontSize="13"
+                                            Foreground="{StaticResource TextSecondary}"
+                                            Text="Custom proxy filename" />
+                                        <TextBox
+                                            x:Name="TxtSystemProxyDllCustom"
+                                            Style="{StaticResource InputTextBox}" />
+                                        <TextBlock
+                                            Margin="0,4,0,0"
+                                            FontSize="12"
+                                            Foreground="{StaticResource TextTertiary}"
+                                            Text="Enter the exact proxy filename shipped with GreenLumaRE, for example custom.dll."
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
                                 </StackPanel>
 
                                 <StackPanel Margin="0,20,0,0">

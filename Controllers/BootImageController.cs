@@ -36,7 +36,8 @@ public class BootImageController
         try
         {
             var method = GreenLumaService.DetectInstallMethod(
-                config.SteamPath, config.GreenLumaPath, config.PreferredMode);
+                config.SteamPath, config.GreenLumaPath, config.PreferredMode,
+                config.SystemProxyDllName);
 
             var image = BootImageService.Load(config, method);
             if (image == null)

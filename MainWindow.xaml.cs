@@ -1224,38 +1224,45 @@ public partial class MainWindow
         var greenLumaPath = _config.GreenLumaPath.Trim();
 
         var installMethod = GreenLumaService.DetectInstallMethod(
-            steamPath, greenLumaPath, _sessionPreferredMode ?? _config.PreferredMode);
+            steamPath, greenLumaPath, _sessionPreferredMode ?? _config.PreferredMode,
+            _config.SystemProxyDllName);
         var successBrush = Resources["Success"] as Brush ?? Brushes.Green;
 
-        // Determine User32 DLL state from disk — the toggle is only shown
-        // when the DLL exists in either enabled or disabled form.
-        var user32DllPath = !string.IsNullOrWhiteSpace(steamPath)
-            ? Path.Combine(steamPath, "user32.dll")
+        // Determine proxy DLL state from disk. The toggle is only shown when
+        // the configured proxy exists in either enabled or disabled form.
+        var proxyName = SystemProxyDll.Normalize(_config.SystemProxyDllName);
+        var proxyDllPath = !string.IsNullOrWhiteSpace(steamPath)
+            ? SystemProxyDll.GetPath(steamPath, proxyName)
             : null;
-        var user32DisabledDllPath = !string.IsNullOrWhiteSpace(steamPath)
-            ? Path.Combine(steamPath, "user32_DISABLED.dll")
+        var proxyDisabledDllPath = !string.IsNullOrWhiteSpace(steamPath)
+            ? SystemProxyDll.GetDisabledPath(steamPath, proxyName)
             : null;
 
-        var hasUser32Dll = user32DllPath != null && File.Exists(user32DllPath);
-        var hasUser32DisabledDll = user32DisabledDllPath != null && File.Exists(user32DisabledDllPath);
-        var user32DllExists = hasUser32Dll || hasUser32DisabledDll;
+        var hasProxyDll = proxyDllPath != null && File.Exists(proxyDllPath);
+        var hasProxyDisabledDll = proxyDisabledDllPath != null && File.Exists(proxyDisabledDllPath);
+        var proxyDllExists = hasProxyDll || hasProxyDisabledDll;
 
-        // Show the User32 toggle only when the DLL is present in either state
-        BorderUser32Mode.Visibility = user32DllExists ? Visibility.Visible : Visibility.Collapsed;
-
-        if (hasUser32Dll)
+        // Show the proxy toggle only when the DLL is present in either state
+        BorderUser32Mode.Visibility = proxyDllExists ? Visibility.Visible : Visibility.Collapsed;
+        if (TxtSystemProxyModeDesc != null)
         {
-            // User32 mode is active — no injection process, so stealth is irrelevant
+            TxtSystemProxyModeDesc.ToolTip =
+                $"If the {proxyName} GreenLuma proxy is detected you can quickly enable or disable it with this toggle.";
+        }
+
+        if (hasProxyDll)
+        {
+            // Proxy mode is active: no injection process, so stealth is irrelevant
             _syncingUser32Mode = true;
             TglUser32Mode.IsChecked = true;
             _syncingUser32Mode = false;
 
-            _notificationManager.SetStatusIndicator(successBrush, "Ready  •  User32 Mode");
+            _notificationManager.SetStatusIndicator(successBrush, "Ready  •  System DLL Proxy");
             return;
         }
 
-        // User32 DLL is either disabled or absent
-        if (hasUser32DisabledDll)
+        // Proxy DLL is either disabled or absent
+        if (hasProxyDisabledDll)
         {
             _syncingUser32Mode = true;
             TglUser32Mode.IsChecked = false;
@@ -1298,15 +1305,40 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(steamPath))
             return;
 
-        if (enable)
+        var proxyName = SystemProxyDll.Normalize(_config.SystemProxyDllName);
+
+        if (!enable && !SystemProxyDll.IsOwned(_config, proxyName))
         {
-            // Enable User32: rename user32_DISABLED.dll → user32.dll
-            GreenLumaService.EnableUser32(steamPath);
+            var answer = CustomMessageBox.Show(
+                $"{proxyName} was found in the Steam folder, but GreenLuma Manager did not deploy it.\n\n" +
+                "It may belong to another unlocker. Disable it anyway?",
+                "Unverified System DLL Proxy",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                // Revert the toggle without re-entering the handler.
+                _syncingUser32Mode = true;
+                toggleButton.IsChecked = true;
+                _syncingUser32Mode = false;
+                return;
+            }
+
+            _config.DeployedSystemProxyDll = proxyName;
         }
-        else
+
+        var renamed = enable
+            ? GreenLumaService.EnableSystemProxy(steamPath, proxyName)
+            : GreenLumaService.DisableSystemProxy(steamPath, proxyName);
+
+        if (!renamed)
         {
-            // Disable User32: rename user32.dll → user32_DISABLED.dll
-            GreenLumaService.DisableUser32(steamPath);
+            _notificationManager.ShowToast($"Could not update {proxyName}. Close Steam and try again.");
+            _syncingUser32Mode = true;
+            toggleButton.IsChecked = !enable;
+            _syncingUser32Mode = false;
+            return;
         }
 
         ConfigService.Save(_config);

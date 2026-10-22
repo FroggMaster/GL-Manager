@@ -33,7 +33,8 @@ public class GreenLumaLauncher
     public bool ValidatePaths(Config config)
     {
         var method = GreenLumaService.DetectInstallMethod(
-            config.SteamPath, config.GreenLumaPath, config.PreferredMode);
+            config.SteamPath, config.GreenLumaPath, config.PreferredMode,
+            config.SystemProxyDllName);
 
         Logger.Debug($"Validating paths for method={method} SteamPath='{config.SteamPath}' GreenLumaPath='{config.GreenLumaPath}'");
 
@@ -51,7 +52,7 @@ public class GreenLumaLauncher
 
             GreenLumaInstallMethod.User32 =>
                 !string.IsNullOrWhiteSpace(config.SteamPath) &&
-                File.Exists(Path.Combine(config.SteamPath, "user32.dll")),
+                File.Exists(SystemProxyDll.GetPath(config.SteamPath, config.SystemProxyDllName)),
 
             _ => false
         };
@@ -71,8 +72,8 @@ public class GreenLumaLauncher
                     (!GreenLumaService.HasGreenLumaDll(config.GreenLumaPath)
                         ? "No GreenLuma DLL in GreenLumaPath" : ""),
                 GreenLumaInstallMethod.User32 =>
-                    !File.Exists(Path.Combine(config.SteamPath, "user32.dll"))
-                        ? "user32.dll not found in SteamPath" : "",
+                    !File.Exists(SystemProxyDll.GetPath(config.SteamPath, config.SystemProxyDllName))
+                        ? $"{SystemProxyDll.Normalize(config.SystemProxyDllName)} not found in SteamPath" : "",
                 _ => "No GreenLuma installation detected"
             };
             Logger.Warn($"Path validation failed: {missing}");
@@ -107,7 +108,8 @@ public class GreenLumaLauncher
     private bool RunLaunch(Config config, CancellationToken cancellationToken)
     {
         var method = GreenLumaService.DetectInstallMethod(
-            config.SteamPath, config.GreenLumaPath, config.PreferredMode);
+            config.SteamPath, config.GreenLumaPath, config.PreferredMode,
+            config.SystemProxyDllName);
 
         if (!LaunchDiagnostics.BeginRun(config, method, "GUI (MainWindow)"))
         {

@@ -15,9 +15,10 @@ public partial class SettingsDialog
     private readonly Config _config;
     private bool _loaded;
     private bool _syncingMode;
+    private bool _syncingProxyDll;
     /// <summary>
     /// True while the GreenLuma path textbox is showing SteamPath as a
-    /// display-only indicator (Normal/User32 mode).  RestoreUserPath
+    /// display-only indicator (Normal/System DLL Proxy mode).  RestoreUserPath
     /// will skip restoring when this is false — the textbox has a real
     /// user-entered value.
     /// </summary>
@@ -25,7 +26,7 @@ public partial class SettingsDialog
     /// <summary>
     /// Remembers the path the user actually typed / browsed to, so it can be
     /// restored when the display is temporarily overwritten (e.g. with SteamPath
-    /// for Normal/User32 mode).
+    /// for Normal/System DLL Proxy mode).
     /// </summary>
     private string? _userGreenLumaPath;
     /// <summary>
@@ -66,6 +67,7 @@ public partial class SettingsDialog
         ChkAutoUpdate.IsChecked = _config.AutoUpdate;
         ChkCheckGreenLumaUpdates.IsChecked = _config.CheckGreenLumaUpdates;
 
+        LoadSystemProxyDllSelection();
         UpdateGreenLumaPathUI();
         LoadGreenLumaModeSelection();
         UpdateStealthModeState();
@@ -146,7 +148,7 @@ public partial class SettingsDialog
 
     /// <summary>
     /// Classifies a user-selected GreenLuma folder and routes to the existing setup flows.
-    /// - Steam directory: offer the GreenLuma method (Normal / User32 / User32SF).
+    /// - Steam directory: offer the GreenLuma method (Normal / System DLL Proxy / SF variant).
     /// - Distinct directory with an existing StealthAny install: nothing to do.
     /// - Distinct (possibly empty) directory without GreenLuma: offer to download/deploy StealthAny.
     /// </summary>
@@ -167,7 +169,7 @@ public partial class SettingsDialog
                 return;
 
             var hasFiles = GreenLumaService.HasGreenLumaDll(steam)
-                           || File.Exists(Path.Combine(steam, "user32.dll"))
+                           || SystemProxyDll.FindPresentProxies(steam).Length > 0
                            || File.Exists(Path.Combine(steam, "DLLInjector.exe"));
 
             var choice = CustomMessageBox.Show(
@@ -175,7 +177,7 @@ public partial class SettingsDialog
                     ? "GreenLuma files were detected in the Steam directory.\n\nSelect the GreenLuma method to use:"
                     : "No GreenLuma installation was detected in the Steam directory.\n\nSelect how you want to set up GreenLuma:",
                 "GreenLuma Method",
-                "Normal", "User32", "User32SF (Recommended)");
+                "Normal", "System DLL Proxy", "System DLL Proxy (SF variant)");
 
             // CustomMessageBox returns 0 for both the first button and a
             // cancelled dialog, so treat a cancel as "no change" only when
@@ -206,23 +208,23 @@ public partial class SettingsDialog
             _config.PreferredMode = forcedMethod.ToString();
             LoadGreenLumaModeSelection();
 
-            // Normal/User32 live in the Steam folder: show SteamPath and make
-            // sure Ok_Click saves the right value.
+            // Normal and System DLL Proxy live in the Steam folder: show
+            // SteamPath and make sure Ok_Click saves the right value.
             TxtGreenLumaPath.Text = steam;
             _inDisplayMode = false;
             _userGreenLumaPath = null;
             UpdateGreenLumaPathUI();
 
             // Deploy only when there is nothing to preserve, or the user
-            // explicitly chose the User32SF variant.
+            // explicitly chose the SF variant.
             var shouldDeploy = !hasFiles || user32DeployMode == User32DeployMode.User32SF;
             if (shouldDeploy)
             {
                 var methodLabel = forcedMethod == GreenLumaInstallMethod.Normal
                     ? "Normal"
                     : user32DeployMode == User32DeployMode.User32SF
-                        ? "User32SF"
-                        : "User32";
+                        ? "System DLL Proxy (SF variant)"
+                        : "System DLL Proxy";
 
                 var confirm = CustomMessageBox.Show(
                     $"Download and deploy {methodLabel} now?",
@@ -233,7 +235,7 @@ public partial class SettingsDialog
                 if (confirm == MessageBoxResult.Yes)
                 {
                     await DownloadAndDeployGreenLumaAsync(
-                        steam, steam, forcedMethod, user32DeployMode, hasFiles);
+                        steam, steam, forcedMethod, user32DeployMode, hasFiles, GetSelectedSystemProxyDll());
                 }
             }
 
@@ -266,7 +268,7 @@ public partial class SettingsDialog
         if (deployChoice == MessageBoxResult.Yes)
         {
             await DownloadAndDeployGreenLumaAsync(
-                steam, selected, GreenLumaInstallMethod.StealthAny, null, false);
+                steam, selected, GreenLumaInstallMethod.StealthAny, null, false, GetSelectedSystemProxyDll());
         }
     }
 
@@ -302,7 +304,8 @@ public partial class SettingsDialog
         var finalSteamPath = NormalizePath(TxtSteamPath.Text);
         var finalGLPath = NormalizePath(TxtGreenLumaPath.Text);
         var method = GreenLumaService.DetectInstallMethod(
-            finalSteamPath, finalGLPath, _config.PreferredMode);
+            finalSteamPath, finalGLPath, _config.PreferredMode,
+            GetSelectedSystemProxyDll());
 
         if (method == GreenLumaInstallMethod.None)
         {
@@ -349,7 +352,7 @@ public partial class SettingsDialog
         var greenLumaPath = NormalizePath(TxtGreenLumaPath.Text);
 
         // When the user explicitly selected a mode from the dropdown,
-        // honour it for display purposes Normal/User32 shows SteamPath,
+        // honour it for display purposes Normal/System DLL Proxy shows SteamPath,
         // StealthAny shows the folder they picked.
         var method = GreenLumaInstallMethod.None;
 
@@ -377,14 +380,15 @@ public partial class SettingsDialog
             return;
         }
 
-        // Explicit mode (Normal / User32 / StealthAny selected from dropdown):
+        // Explicit mode (Normal / System DLL Proxy / StealthAny selected from dropdown):
         // update path display so the user sees the consequence of their choice.
         switch (method)
         {
             case GreenLumaInstallMethod.User32:
-                TxtGreenLumaDesc.Text = "GreenLuma is loaded via user32.dll in the Steam folder. Browse to a separate folder to switch to StealthAny mode.";
+                var proxyName = SystemProxyDll.Normalize(_config.SystemProxyDllName);
+                TxtGreenLumaDesc.Text = $"GreenLuma is loaded via {proxyName} in the Steam folder. Browse to a separate folder to switch to StealthAny mode.";
                 TxtGreenLumaPath.ToolTip =
-                    "GreenLuma is loaded via user32.dll in the Steam folder. " +
+                    $"GreenLuma is loaded via {proxyName} in the Steam folder. " +
                     "Select a different folder to set up a StealthAny installation.";
                 FillDisplayPath(steamPath);
                 break;
@@ -404,7 +408,7 @@ public partial class SettingsDialog
                 break;
         }
 
-        // Dim the GL directory section for Normal/User32 modes (where GL
+        // Dim the GL directory section for Normal/System DLL Proxy modes (where GL
         // lives inside the Steam folder) but keep it fully active when the
         // user explicitly chose StealthAny.
         PanelGreenLumaDir.Opacity = method == GreenLumaInstallMethod.StealthAny
@@ -437,7 +441,7 @@ public partial class SettingsDialog
 
     /// <summary>
     /// Restores the GreenLuma path textbox after leaving a display-only mode
-    /// (Normal/User32).  Uses the captured user path if one was set, otherwise
+    /// (Normal/System DLL Proxy).  Uses the captured user path if one was set, otherwise
     /// falls back to the config value or empty.  When not in display mode the
     /// current textbox value is kept as-is (it was set directly by the user).
     /// </summary>
@@ -533,7 +537,78 @@ public partial class SettingsDialog
         return GreenLumaService.DetectInstallMethod(
             NormalizePath(TxtSteamPath.Text),
             NormalizePath(TxtGreenLumaPath.Text),
-            _config.PreferredMode);
+            _config.PreferredMode,
+            GetSelectedSystemProxyDll());
+    }
+
+    /// <summary>
+    /// Synchronises the proxy ComboBox with <see cref="Config.SystemProxyDllName"/>.
+    /// Unknown names fall back to the Custom entry so no configured value is lost.
+    /// </summary>
+    private void LoadSystemProxyDllSelection()
+    {
+        if (CmbSystemProxyDll == null || TxtSystemProxyDllCustom == null)
+            return;
+
+        _syncingProxyDll = true;
+        try
+        {
+            var name = SystemProxyDll.Normalize(_config.SystemProxyDllName);
+            foreach (ComboBoxItem item in CmbSystemProxyDll.Items)
+            {
+                if (string.Equals(item.Tag as string, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    item.IsSelected = true;
+                    TxtSystemProxyDllCustom.Text = string.Empty;
+                    UpdateSystemProxyDllCustomVisibility();
+                    return;
+                }
+            }
+
+            foreach (ComboBoxItem item in CmbSystemProxyDll.Items)
+            {
+                if (string.Equals(item.Tag as string, "custom", StringComparison.OrdinalIgnoreCase))
+                {
+                    item.IsSelected = true;
+                    break;
+                }
+            }
+
+            TxtSystemProxyDllCustom.Text = name;
+            UpdateSystemProxyDllCustomVisibility();
+        }
+        finally
+        {
+            _syncingProxyDll = false;
+        }
+    }
+
+    private void SystemProxyDll_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loaded || _syncingProxyDll) return;
+        UpdateSystemProxyDllCustomVisibility();
+    }
+
+    private void UpdateSystemProxyDllCustomVisibility()
+    {
+        if (PanelSystemProxyDllCustom == null || CmbSystemProxyDll == null)
+            return;
+
+        var isCustom = string.Equals(
+            (CmbSystemProxyDll.SelectedItem as ComboBoxItem)?.Tag as string,
+            "custom",
+            StringComparison.OrdinalIgnoreCase);
+
+        PanelSystemProxyDllCustom.Visibility = isCustom ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private string GetSelectedSystemProxyDll()
+    {
+        var tag = (CmbSystemProxyDll?.SelectedItem as ComboBoxItem)?.Tag as string;
+        if (string.Equals(tag, "custom", StringComparison.OrdinalIgnoreCase))
+            return (TxtSystemProxyDllCustom?.Text ?? string.Empty).Trim();
+
+        return string.IsNullOrWhiteSpace(tag) ? SystemProxyDll.DefaultName : tag;
     }
 
     private void UpdateStealthModeState()
@@ -550,7 +625,7 @@ public partial class SettingsDialog
         else if (method == GreenLumaInstallMethod.User32)
         {
             ChkStealthMode.IsEnabled = false;
-            ChkStealthMode.ToolTip = "Stealth Mode is not configurable while User32 mode is active.";
+            ChkStealthMode.ToolTip = "Stealth Mode is not configurable while the system DLL proxy is active.";
         }
         else
         {
@@ -571,16 +646,18 @@ public partial class SettingsDialog
 
             var steamPath = NormalizePath(TxtSteamPath.Text);
 
-            // When the user explicitly picks Normal or StealthAny, disable
-            // User32 if it exists — otherwise it auto-injects and overrides
-            // the chosen mode on next Steam launch.
+            // When the user explicitly picks Normal or StealthAny, disable the
+            // system DLL proxy if it exists. Otherwise it auto-injects and
+            // overrides the chosen mode on the next Steam launch.
             if (!string.IsNullOrEmpty(tag) &&
-                !string.Equals(tag, GreenLumaInstallMethod.User32.ToString(), StringComparison.OrdinalIgnoreCase))
+                !string.Equals(tag, GreenLumaInstallMethod.User32.ToString(), StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(steamPath))
             {
-                if (!string.IsNullOrWhiteSpace(steamPath) &&
-                    File.Exists(Path.Combine(steamPath, "user32.dll")))
+                var proxyName = SystemProxyDll.Normalize(GetSelectedSystemProxyDll());
+                if (File.Exists(SystemProxyDll.GetPath(steamPath, proxyName)) &&
+                    ConfirmProxyOwnership(steamPath, proxyName))
                 {
-                    GreenLumaService.DisableUser32(steamPath);
+                    GreenLumaService.DisableSystemProxy(steamPath, proxyName);
                 }
             }
 
@@ -590,7 +667,7 @@ public partial class SettingsDialog
 
             // Directly set the GL path based on the selected mode instead of
             // relying on UpdateGreenLumaPathUI's detection-based logic.  This
-            // guarantees Normal/User32 → SteamPath, StealthAny → saved path.
+            // guarantees Normal/System DLL Proxy → SteamPath, StealthAny → saved path.
             if (string.IsNullOrEmpty(tag))
             {
                 // Auto-Detect: reset display-mode tracking before detection
@@ -615,13 +692,14 @@ public partial class SettingsDialog
             }
             else
             {
-                // Normal or User32: show SteamPath
-                var isUser32 = tag.Equals(GreenLumaInstallMethod.User32.ToString(), StringComparison.OrdinalIgnoreCase);
-                TxtGreenLumaDesc.Text = isUser32
-                    ? "GreenLuma is loaded via user32.dll in the Steam folder. Browse to a separate folder to switch to StealthAny mode."
+                // Normal or System DLL Proxy: show SteamPath
+                var isSystemProxy = tag.Equals(GreenLumaInstallMethod.User32.ToString(), StringComparison.OrdinalIgnoreCase);
+                var proxyName = SystemProxyDll.Normalize(GetSelectedSystemProxyDll());
+                TxtGreenLumaDesc.Text = isSystemProxy
+                    ? $"GreenLuma is loaded via {proxyName} in the Steam folder. Browse to a separate folder to switch to StealthAny mode."
                     : "GreenLuma is installed directly in the Steam folder. Browse to a separate folder to switch to StealthAny mode.";
-                TxtGreenLumaPath.ToolTip = isUser32
-                    ? "GreenLuma is loaded via user32.dll in the Steam folder. Select a different folder to set up a StealthAny installation."
+                TxtGreenLumaPath.ToolTip = isSystemProxy
+                    ? $"GreenLuma is loaded via {proxyName} in the Steam folder. Select a different folder to set up a StealthAny installation."
                     : "GreenLuma is installed directly in the Steam folder (Normal mode). Select a different folder to set up a StealthAny installation.";
                 PanelGreenLumaDir.Opacity = 0.45;
                 FillDisplayPath(steamPath);
@@ -630,11 +708,67 @@ public partial class SettingsDialog
     }
 
     /// <summary>
-    /// When multiple GreenLuma installations are detected (e.g. User32 + Normal,
-    /// Normal + StealthAny, User32 + StealthAny), prompts the user to pick one.
-    /// The choice is only persisted if the user checks "Remember my preference"
-    /// in the prompt.  The explicit dropdown selection in Settings is the other
-    /// way to permanently save a preference.
+    /// Records a successful proxy deployment and disables the previously
+    /// deployed proxy. The old proxy is disabled only after the new file is in
+    /// place, so a failed deploy never leaves the user without an active proxy.
+    /// </summary>
+    private void ApplyDeployedProxyTracking(
+        string steamPath,
+        string proxyName,
+        GreenLumaDeploymentResult deployResult)
+    {
+        if (!deployResult.ProxyDeployed)
+            return;
+
+        var previousName = string.IsNullOrWhiteSpace(_config.DeployedSystemProxyDll)
+            ? SystemProxyDll.DefaultName
+            : SystemProxyDll.Normalize(_config.DeployedSystemProxyDll);
+
+        if (!string.Equals(previousName, proxyName, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(SystemProxyDll.GetPath(steamPath, previousName)) &&
+            SystemProxyDll.IsOwned(_config, previousName))
+        {
+            GreenLumaService.DisableSystemProxy(steamPath, previousName);
+        }
+
+        _config.SystemProxyDllName = proxyName;
+        _config.DeployedSystemProxyDll = proxyName;
+        ConfigService.Save(_config);
+    }
+
+    /// <summary>
+    /// Confirms that an existing proxy file belongs to GreenLuma before the
+    /// dialog renames or overwrites it. Files deployed by this application are
+    /// trusted automatically.
+    /// </summary>
+    private bool ConfirmProxyOwnership(string steamPath, string proxyName)
+    {
+        if (SystemProxyDll.IsOwned(_config, proxyName))
+            return true;
+
+        var answer = CustomMessageBox.Show(
+            $"{proxyName} was found in the Steam folder, but GreenLuma Manager did not deploy it.\n\n" +
+            "It may belong to another unlocker. Treat it as a GreenLuma proxy?",
+            "Unverified System DLL Proxy",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (answer != MessageBoxResult.Yes)
+        {
+            Logger.Warn($"User declined to treat '{proxyName}' in '{steamPath}' as a GreenLuma proxy");
+            return false;
+        }
+
+        _config.DeployedSystemProxyDll = proxyName;
+        return true;
+    }
+
+    /// <summary>
+    /// When multiple GreenLuma installations are detected (System DLL Proxy +
+    /// Normal, Normal + StealthAny, proxy + StealthAny), prompts the user to
+    /// pick one. The choice is only persisted if the user checks "Remember my
+    /// preference" in the prompt. The explicit dropdown selection in Settings
+    /// is the other way to permanently save a preference.
     /// </summary>
     private void CheckMixedInstallState()
     {
@@ -848,9 +982,15 @@ public partial class SettingsDialog
         User32DeployMode? user32DeployMode = null;
         var hadExistingInstall = false;
 
+        if (!SystemProxyDll.TryValidate(GetSelectedSystemProxyDll(), out var proxyName, out var proxyError))
+        {
+            CustomMessageBox.Show(proxyError!, "System DLL Proxy", icon: MessageBoxImage.Exclamation);
+            return;
+        }
+
         // Check if an existing installation is detected
         var installMethod = GreenLumaService.DetectInstallMethod(
-            steamPath, greenLumaPath, _config.PreferredMode);
+            steamPath, greenLumaPath, _config.PreferredMode, proxyName);
 
         if (installMethod != GreenLumaInstallMethod.None)
         {
@@ -880,7 +1020,7 @@ public partial class SettingsDialog
                     ? "Choose how you want to deploy:"
                     : "No GreenLuma installation detected.\n\nChoose how you want to deploy:",
                 "Install GreenLuma",
-                "Normal", "User32", "StealthAny");
+                "Normal", "System DLL Proxy", "StealthAny");
 
             switch (choice)
             {
@@ -898,7 +1038,7 @@ public partial class SettingsDialog
                     forcedMethod = GreenLumaInstallMethod.Normal;
                     break;
 
-                case 1: // User32
+                case 1: // System DLL Proxy
                     if (string.IsNullOrWhiteSpace(steamPath) ||
                         !File.Exists(Path.Combine(steamPath, "Steam.exe")))
                     {
@@ -909,17 +1049,25 @@ public partial class SettingsDialog
                         return;
                     }
 
-                    // Ask user which User32 variant to deploy
-                    var user32Choice = CustomMessageBox.Show(
-                        "Choose the User32 deployment variant:\n\n" +
-                        "User32 — deploys user32.dll directly from the archive.\n" +
-                        "User32SF (Recommended) — deploys user32SF.dll renamed to user32.dll.",
-                        "User32 Deployment",
-                        "User32", "User32SF (Recommended)");
+                    if (string.Equals(proxyName, SystemProxyDll.DefaultName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // The SF variant only exists for the user32 proxy name.
+                        var user32Choice = CustomMessageBox.Show(
+                            "Choose the system DLL proxy variant:\n\n" +
+                            "System DLL Proxy: deploys user32.dll directly from the archive.\n" +
+                            "SF variant (recommended): deploys user32SF.dll renamed to user32.dll.",
+                            "System DLL Proxy Deployment",
+                            "System DLL Proxy", "SF variant (recommended)");
 
-                    user32DeployMode = user32Choice == 1
-                        ? User32DeployMode.User32SF
-                        : User32DeployMode.User32;
+                        user32DeployMode = user32Choice == 1
+                            ? User32DeployMode.User32SF
+                            : User32DeployMode.User32;
+                    }
+                    else
+                    {
+                        // Other proxy names use their exact archive file.
+                        user32DeployMode = User32DeployMode.User32;
+                    }
 
                     greenLumaPath = steamPath;
                     forcedMethod = GreenLumaInstallMethod.User32;
@@ -972,7 +1120,7 @@ public partial class SettingsDialog
         }
 
         await DownloadAndDeployGreenLumaAsync(
-            steamPath, greenLumaPath, forcedMethod, user32DeployMode, hadExistingInstall);
+            steamPath, greenLumaPath, forcedMethod, user32DeployMode, hadExistingInstall, proxyName);
     }
 
     /// <summary>
@@ -986,8 +1134,30 @@ public partial class SettingsDialog
         string greenLumaPath,
         GreenLumaInstallMethod? forcedMethod,
         User32DeployMode? user32DeployMode,
-        bool hadExistingInstall)
+        bool hadExistingInstall,
+        string? systemProxyDll = null)
     {
+        if (!SystemProxyDll.TryValidate(systemProxyDll, out var proxyName, out var proxyError))
+        {
+            CustomMessageBox.Show(proxyError!, "System DLL Proxy", icon: MessageBoxImage.Exclamation);
+            return false;
+        }
+
+        // Confirm ownership before overwriting a proxy that another tool may
+        // have placed in the Steam folder.
+        var deployMethod = forcedMethod ?? GreenLumaService.DetectInstallMethod(
+            steamPath, greenLumaPath, _config.PreferredMode, proxyName);
+        if (deployMethod == GreenLumaInstallMethod.User32 &&
+            File.Exists(SystemProxyDll.GetPath(steamPath, proxyName)) &&
+            !ConfirmProxyOwnership(steamPath, proxyName))
+        {
+            CustomMessageBox.Show(
+                $"{proxyName} was left untouched. Choose a different proxy name or remove the existing file first.",
+                "System DLL Proxy",
+                icon: MessageBoxImage.Exclamation);
+            return false;
+        }
+
         BtnDownloadGreenLuma.IsEnabled = false;
         PnlDownloadProgress.Visibility = Visibility.Visible;
 
@@ -1109,12 +1279,15 @@ public partial class SettingsDialog
                         forcedMethod: forcedMethod,
                         user32DeployMode: user32DeployMode,
                         progressCallback: SetStatus,
-                        numericProgress: deployProgress));
+                        numericProgress: deployProgress,
+                        systemProxyDll: proxyName));
 
                 if (deployResult.Success)
                 {
                     overallProgress.Report(1.0);
                     TxtDownloadStatus.Text = "Complete!";
+
+                    ApplyDeployedProxyTracking(steamPath, proxyName, deployResult);
 
                     var fileList = deployResult.DeployedFiles.Count > 0
                         ? "\n" + string.Join("\n", deployResult.DeployedFiles.Select(f => $"  • {f}"))
@@ -1122,8 +1295,10 @@ public partial class SettingsDialog
                     var summary = $"GreenLuma updated successfully!\n\nDownloaded: {result.FileName}";
                     if (fileList.Length > 0)
                         summary += $"\nFiles updated:{fileList}";
-                    if (deployResult.User32Deployed)
-                        summary += "\n  • user32.dll (Steam folder)";
+                    if (deployResult.ProxyDeployed)
+                        summary += $"\n  • {deployResult.ProxyDllName ?? proxyName} (Steam folder)";
+                    if (!string.IsNullOrWhiteSpace(deployResult.ProxyWarning))
+                        summary += $"\n\nWarning: {deployResult.ProxyWarning}";
 
                     CustomMessageBox.Show(summary, "Update Complete", icon: MessageBoxImage.Asterisk);
                     return true;
@@ -1196,7 +1371,11 @@ public partial class SettingsDialog
         return string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim().TrimEnd('\\', '/');
     }
 
-    private static bool ValidatePaths(string steamPath, string greenLumaPath, string? preferredMode = null)
+    private static bool ValidatePaths(
+        string steamPath,
+        string greenLumaPath,
+        string? preferredMode = null,
+        string? systemProxyDll = null)
     {
         if (string.IsNullOrWhiteSpace(steamPath))
         {
@@ -1249,9 +1428,9 @@ public partial class SettingsDialog
             return true;
         }
 
-        // No explicit preference → fall back to disk detection
-        // User32 mode: user32.dll in Steam dir → no separate GL path needed
-        if (File.Exists(Path.Combine(steamPath, "user32.dll")))
+        // No explicit preference: fall back to disk detection.
+        // System DLL Proxy mode needs no separate GreenLuma path.
+        if (File.Exists(SystemProxyDll.GetPath(steamPath, systemProxyDll)))
             return true;
 
         // Normal mode: GL files in Steam dir → no separate GL path needed
@@ -1303,14 +1482,90 @@ public partial class SettingsDialog
         return true;
     }
 
+    /// <summary>
+    /// Applies a changed proxy selection. The previous proxy is only disabled
+    /// once the newly selected one is already present, so changing the name in
+    /// Settings cannot leave the user without a working proxy. A file that was
+    /// not deployed by this application requires explicit confirmation before
+    /// it is adopted or replaced.
+    /// </summary>
+    private bool TryApplySystemProxyDll(string steamPath, string proxyName)
+    {
+        var previousName = SystemProxyDll.Normalize(_config.SystemProxyDllName);
+        var changed = !string.Equals(previousName, proxyName, StringComparison.OrdinalIgnoreCase);
+        var targetPath = SystemProxyDll.GetPath(steamPath, proxyName);
+        var targetDisabledPath = SystemProxyDll.GetDisabledPath(steamPath, proxyName);
+        var targetEnabled = !string.IsNullOrWhiteSpace(steamPath) && File.Exists(targetPath);
+        var targetDisabled = !string.IsNullOrWhiteSpace(steamPath) && File.Exists(targetDisabledPath);
+        var targetExists = targetEnabled || targetDisabled;
+
+        if (changed && targetExists && !SystemProxyDll.IsOwned(_config, proxyName))
+        {
+            var adopt = CustomMessageBox.Show(
+                $"{proxyName} already exists in the Steam folder, but GreenLuma Manager did not deploy it.\n\n" +
+                "Treat it as a GreenLuma proxy?",
+                "Unverified System DLL Proxy",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (adopt != MessageBoxResult.Yes)
+            {
+                CustomMessageBox.Show(
+                    $"{proxyName} was left untouched. Choose a different proxy name or remove the existing file first.",
+                    "System DLL Proxy",
+                    icon: MessageBoxImage.Exclamation);
+                return false;
+            }
+        }
+
+        if (changed && targetExists)
+        {
+            var previousPath = SystemProxyDll.GetPath(steamPath, previousName);
+            if (File.Exists(previousPath) && SystemProxyDll.IsOwned(_config, previousName))
+                GreenLumaService.DisableSystemProxy(steamPath, previousName);
+
+            // A disabled proxy for the new name is activated as part of the
+            // switch, so the selection takes effect immediately.
+            if (!targetEnabled && targetDisabled)
+                GreenLumaService.EnableSystemProxy(steamPath, proxyName);
+        }
+        else if (changed)
+        {
+            CustomMessageBox.Show(
+                $"{proxyName} is not present in the Steam folder yet.\n\n" +
+                "Download and deploy GreenLuma to complete the switch. The previous proxy was left in place.",
+                "System DLL Proxy",
+                icon: MessageBoxImage.Asterisk);
+        }
+
+        _config.SystemProxyDllName = proxyName;
+
+        // Only claim ownership when the file was already present and the user
+        // explicitly adopted it. An unchanged selection leaves the existing
+        // ownership record untouched.
+        if (changed && targetExists)
+            _config.DeployedSystemProxyDll = proxyName;
+
+        return true;
+    }
+
     private void Ok_Click(object sender, RoutedEventArgs e)
     {
         var steamPath = NormalizePath(TxtSteamPath.Text);
         var greenLumaPath = NormalizePath(TxtGreenLumaPath.Text);
 
-        if (!ValidatePaths(steamPath, greenLumaPath, _config.PreferredMode)) return;
+        if (!SystemProxyDll.TryValidate(GetSelectedSystemProxyDll(), out var proxyName, out var proxyError))
+        {
+            CustomMessageBox.Show(proxyError!, "System DLL Proxy", icon: MessageBoxImage.Exclamation);
+            return;
+        }
 
-        var method = GreenLumaService.DetectInstallMethod(steamPath, greenLumaPath);
+        if (!ValidatePaths(steamPath, greenLumaPath, _config.PreferredMode, proxyName)) return;
+
+        if (!TryApplySystemProxyDll(steamPath, proxyName))
+            return;
+
+        var method = GreenLumaService.DetectInstallMethod(steamPath, greenLumaPath, null, proxyName);
         if (method == GreenLumaInstallMethod.StealthAny)
         {
             CustomMessageBox.Show(
@@ -1363,7 +1618,7 @@ public partial class SettingsDialog
             else
             {
                 // Single installation — detect automatically.
-                var detected = GreenLumaService.DetectInstallMethod(steamPath, effectiveGLPath);
+                var detected = GreenLumaService.DetectInstallMethod(steamPath, effectiveGLPath, null, proxyName);
                 _config.GreenLumaPath = detected is GreenLumaInstallMethod.Normal
                                                             or GreenLumaInstallMethod.User32
                     ? steamPath
@@ -1372,7 +1627,7 @@ public partial class SettingsDialog
         }
         else
         {
-            // In display-only mode (Normal/User32) the textbox shows SteamPath.
+            // In display-only mode (Normal/System DLL Proxy) the textbox shows SteamPath.
             // Save the captured user path if one was set, otherwise use the
             // current textbox value (which is the user's real path when not
             // in display mode).

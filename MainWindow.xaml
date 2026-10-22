@@ -2666,13 +2666,14 @@
                                         FontSize="15"
                                         FontWeight="SemiBold"
                                         Foreground="{StaticResource Text}"
-                                        Text="User32 Mode" />
+                                        Text="System DLL Proxy" />
                                     <TextBlock
+                                        x:Name="TxtSystemProxyModeDesc"
                                         Margin="0,3,0,0"
                                         FontSize="12"
                                         Foreground="{StaticResource TextSecondary}"
-                                        Text="Toggle User32 mode on or off." 
-                                        ToolTip="If the user32.dll version of GreenLuma is detected you can quickly enable, or disable it with this toggle."/>
+                                        Text="Toggle the system DLL proxy on or off."
+                                        ToolTip="If the GreenLuma system DLL proxy is detected you can quickly enable or disable it with this toggle."/>
                                     
                                 </StackPanel>
 

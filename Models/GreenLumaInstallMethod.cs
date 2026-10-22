@@ -21,8 +21,10 @@ public enum GreenLumaInstallMethod
     StealthAny,
 
     /// <summary>
-    /// A modified user32.dll sits in the Steam directory, hooking Steam's
-    /// API calls directly. No injector needed — Steam starts normally.
+    /// A modified system DLL proxy (user32.dll, version.dll, winmm.dll, or a
+    /// custom name) sits in the Steam directory, hooking Steam's API calls
+    /// directly. No injector needed, Steam starts normally. The member name is
+    /// retained for backwards compatibility with saved preferences.
     /// </summary>
     User32
 }

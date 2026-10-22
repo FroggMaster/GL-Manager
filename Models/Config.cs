@@ -51,8 +51,24 @@ public class Config
     /// When multiple install methods are available, the user's last choice is
     /// persisted here so it survives restarts.  Value is one of
     /// "User32", "Normal", "StealthAny", or null/empty (auto-detect).
+    /// The "User32" value is retained for backwards compatibility and now
+    /// represents the System DLL Proxy install method.
     /// </summary>
     public string? PreferredMode { get; set; }
+
+    /// <summary>
+    /// Filename of the system DLL proxy GreenLumaRE loads from the Steam
+    /// folder. Defaults to user32.dll so existing installations and old
+    /// config files keep their current behavior.
+    /// </summary>
+    [DataMember] public string SystemProxyDllName { get; set; } = "user32.dll";
+
+    /// <summary>
+    /// Filename of the proxy DLL this application deployed or adopted.
+    /// Empty means unknown (legacy installation). Used to avoid disabling or
+    /// overwriting a proxy that belongs to another tool.
+    /// </summary>
+    [DataMember] public string DeployedSystemProxyDll { get; set; } = string.Empty;
 
     /// <summary>
     /// Remembers the last valid StealthAny path the user configured.
