@@ -126,6 +126,7 @@ public partial class MainWindow
 
         UpdatePluginButtons();
         CheckPathsOnStartup();
+        UpdateInstalledGreenLumaVersion();
         CheckForUpdates();
         CheckForGreenLumaUpdates();
         UpdateStatus();
@@ -1088,20 +1089,8 @@ public partial class MainWindow
         _sessionPreferredMode = null;
         UpdateStatus();
 
-        // Re-detect installed GreenLuma version — deployment may have updated it
-        if (_lastGreenLumaVersion == null || string.IsNullOrWhiteSpace(_config.GreenLumaPath))
-            return;
-
-        var (installedVersion, _) = GreenLumaService.DetectInstalledVersion(_config.GreenLumaPath);
-        var updatedInfo = new GreenLumaVersionInfo
-        {
-            LatestVersionTag = _lastGreenLumaVersion.LatestVersionTag,
-            LatestSemanticVersion = _lastGreenLumaVersion.LatestSemanticVersion,
-            InstalledVersion = installedVersion,
-            CheckSucceeded = _lastGreenLumaVersion.CheckSucceeded,
-            CheckedAt = DateTime.UtcNow
-        };
-        UpdateGreenLumaVersionStatus(updatedInfo);
+        // Refresh the installed version and re-check if the public latest is unknown.
+        RefreshGreenLumaVersionAndCheck();
     }
 
     private void SettingsButton_Click(object? sender, RoutedEventArgs? e)
@@ -1127,20 +1116,8 @@ public partial class MainWindow
                 if (!hadGreenLumaPath && nowHasGreenLumaPath)
                     _ = ImportExistingAppListAfterSettings();
 
-                // Re-detect installed GreenLuma version — deployment may have updated it
-                if (_lastGreenLumaVersion != null && nowHasGreenLumaPath)
-                {
-                    var (installedVersion, _) = GreenLumaService.DetectInstalledVersion(_config.GreenLumaPath);
-                    var updatedInfo = new GreenLumaVersionInfo
-                    {
-                        LatestVersionTag = _lastGreenLumaVersion.LatestVersionTag,
-                        LatestSemanticVersion = _lastGreenLumaVersion.LatestSemanticVersion,
-                        InstalledVersion = installedVersion,
-                        CheckSucceeded = _lastGreenLumaVersion.CheckSucceeded,
-                        CheckedAt = DateTime.UtcNow
-                    };
-                    UpdateGreenLumaVersionStatus(updatedInfo);
-                }
+                // Refresh the installed version and re-check if the public latest is unknown.
+                RefreshGreenLumaVersionAndCheck();
             }
         }
         catch (Exception ex)
@@ -1277,11 +1254,9 @@ public partial class MainWindow
                 break;
 
             case GreenLumaInstallMethod.StealthAny:
-                _config.NoHook = true;
-
                 var stealthLabel = _config.NoHook
-                    ? "Ready  •  Stealth Mode (Forced)"
-                    : "Ready  •  Stealth Mode";
+                    ? "Ready  •  Stealth (Any Folder)  •  Stealth Mode"
+                    : "Ready  •  Stealth (Any Folder)";
                 _notificationManager.SetStatusIndicator(successBrush, stealthLabel);
                 break;
 
@@ -1343,6 +1318,7 @@ public partial class MainWindow
 
         ConfigService.Save(_config);
         UpdateStatus();
+        RefreshGreenLumaVersionAndCheck();
     }
 
     // ─── Update ───────────────────────────────────────────────────────
@@ -1393,7 +1369,8 @@ public partial class MainWindow
                 return;
             }
 
-            _lastGreenLumaVersion = result;
+            if (result.CheckSucceeded)
+                _lastGreenLumaVersion = result;
 
             await Dispatcher.InvokeAsync(() =>
             {
@@ -1405,12 +1382,12 @@ public partial class MainWindow
                 }
                 else if (result.CheckSucceeded)
                 {
-                    Logger.Debug($"GreenLuma is up to date: {result.InstalledVersion}");
+                    Logger.Debug($"{result.ProductName} is up to date: {result.InstalledVersion}");
                     UpdateGreenLumaVersionStatus(result);
                 }
                 else
                 {
-                    Logger.Warn("GreenLuma update check failed");
+                    Logger.Warn($"GreenLuma update check failed: {result.ErrorMessage ?? "unknown error"}");
                 }
             });
         }
@@ -1420,17 +1397,86 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>
+    /// Shows the locally installed GreenLuma or GreenLumaRE version in the
+    /// footer without waiting for the public update check. Preserves the last
+    /// public latest version for regular GreenLuma installations.
+    /// </summary>
+    private void UpdateInstalledGreenLumaVersion()
+    {
+        if (_config == null || string.IsNullOrWhiteSpace(_config.GreenLumaPath))
+        {
+            HideGreenLumaVersionStatus();
+            return;
+        }
+
+        var installation = GreenLumaService.DetectActiveInstallation(_config);
+        if (installation == null)
+        {
+            HideGreenLumaVersionStatus();
+            return;
+        }
+
+        var previous = _lastGreenLumaVersion;
+
+        var info = new GreenLumaVersionInfo
+        {
+            ProductName = installation.ProductName,
+            IsGreenLumaRe = installation.IsGreenLumaRe,
+            LatestVersionTag = installation.IsGreenLumaRe
+                ? string.Empty
+                : previous?.LatestVersionTag ?? string.Empty,
+            LatestSemanticVersion = installation.IsGreenLumaRe
+                ? null
+                : previous?.LatestSemanticVersion,
+            InstalledVersion = installation.Version,
+            CheckSucceeded = previous?.CheckSucceeded ?? true,
+            CheckedAt = DateTime.UtcNow
+        };
+
+        _lastGreenLumaVersion = info;
+        UpdateGreenLumaVersionStatus(info);
+    }
+
+    private void HideGreenLumaVersionStatus()
+    {
+        _lastGreenLumaVersion = null;
+        if (TxtGreenLumaVersion != null)
+            TxtGreenLumaVersion.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Refreshes the footer version and re-runs the public GreenLuma check
+    /// when the active installation is a public build with no known latest.
+    /// This covers switching away from a GreenLumaRE proxy at runtime.
+    /// </summary>
+    private void RefreshGreenLumaVersionAndCheck()
+    {
+        UpdateInstalledGreenLumaVersion();
+
+        if (_config?.CheckGreenLumaUpdates == true &&
+            _lastGreenLumaVersion is { IsGreenLumaRe: false, LatestSemanticVersion: null })
+        {
+            CheckForGreenLumaUpdates();
+        }
+    }
+
     private void UpdateGreenLumaVersionStatus(GreenLumaVersionInfo info)
     {
         if (TxtGreenLumaVersion == null)
             return;
 
-        var installed = info.InstalledVersion != null ? $"v{info.InstalledVersion}" : "GL ?";
-        var latest = info.LatestSemanticVersion != null
-            ? $"v{info.LatestSemanticVersion}"
-            : "?";
+        var productName = string.IsNullOrWhiteSpace(info.ProductName)
+            ? "GreenLuma"
+            : info.ProductName;
+        var installed = info.InstalledVersion != null ? $"v{info.InstalledVersion}" : "?";
 
-        TxtGreenLumaVersion.Text = $"Current: {installed}  Latest: {latest}";
+        // GreenLumaRE and the initial local-only display have no public latest.
+        var latestSuffix = !info.IsGreenLumaRe && info.LatestSemanticVersion != null
+            ? $"  Latest: v{info.LatestSemanticVersion}"
+            : string.Empty;
+
+        TxtGreenLumaVersion.Text = $"Current: {productName} {installed}{latestSuffix}";
         TxtGreenLumaVersion.Visibility = Visibility.Visible;
     }
 

@@ -12,13 +12,32 @@ public static partial class GreenLumaUpdateService
     private const int PollIntervalMs = 1500;
     private const int FetchTimeoutMs = 30000;
 
-    [GeneratedRegex(@"GreenLuma \d{4}\s+(\d+\.\d+\.\d+)")]
+    [GeneratedRegex(@"GreenLuma\s+\d{4}.*?(\d+\.\d+\.\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex VersionTitleRegex();
 
     public static async Task<GreenLumaVersionInfo?> CheckForGreenLumaUpdatesAsync(Config config)
     {
         if (!config.CheckGreenLumaUpdates)
             return null;
+
+        var installation = GreenLumaService.DetectActiveInstallation(config);
+
+        // GreenLumaRE is not publicly released. Its version is embedded in the
+        // DLL, so it must not be compared with the public GreenLuma forum feed.
+        if (installation?.IsGreenLumaRe == true)
+        {
+            return new GreenLumaVersionInfo
+            {
+                ProductName = installation.ProductName,
+                IsGreenLumaRe = true,
+                LatestVersionTag = string.Empty,
+                LatestSemanticVersion = null,
+                InstalledVersion = installation.Version,
+                CheckedAt = DateTime.UtcNow,
+                CheckSucceeded = true,
+                ErrorMessage = null
+            };
+        }
 
         try
         {
@@ -30,13 +49,13 @@ public static partial class GreenLumaUpdateService
             if (semanticVersion == null)
                 return CreateFailedResult($"Failed to parse version from title: {title}");
 
-            var (installedVersion, _) = GreenLumaService.DetectInstalledVersion(config.GreenLumaPath);
-
             return new GreenLumaVersionInfo
             {
+                ProductName = installation?.ProductName ?? "GreenLuma",
+                IsGreenLumaRe = false,
                 LatestVersionTag = title,
                 LatestSemanticVersion = semanticVersion,
-                InstalledVersion = installedVersion,
+                InstalledVersion = installation?.Version,
                 CheckedAt = DateTime.UtcNow,
                 CheckSucceeded = true,
                 ErrorMessage = null

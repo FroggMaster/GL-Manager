@@ -5,21 +5,26 @@ using GreenLuma_Manager.Utilities;
 namespace GreenLuma_Manager.Services;
 
 /// <summary>
-/// Centralized logging service. Writes to <c>%LOCALAPPDATA%\GLM_Manager\GreenLuma-Manager.log</c>.
+/// Centralized logging service. Writes to <c>%LOCALAPPDATA%\GLM_Manager\logs\GreenLuma-Manager.log</c>.
 /// All log entries include timestamp, level, source file, member name, line number, and message.
-/// Logging never throws — all I/O failures are silently handled.
+/// Logging never throws, all I/O failures are silently handled.
 /// </summary>
 public static class Logger
 {
-    private static readonly string LogPath = Path.Combine(PathDetector.AppDataDir, "GreenLuma-Manager.log");
-    private static readonly string PrevLogPath = Path.Combine(PathDetector.AppDataDir, "GreenLuma-Manager.prev.log");
+    private static readonly string LogDir = Path.Combine(PathDetector.AppDataDir, "logs");
+    private static readonly string LogPath = Path.Combine(LogDir, "GreenLuma-Manager.log");
+    private static readonly string PrevLogPath = Path.Combine(LogDir, "GreenLuma-Manager.prev.log");
     private static readonly object Lock = new();
 
     static Logger()
     {
         try
         {
-            PathDetector.EnsureExists(PathDetector.AppDataDir);
+            PathDetector.EnsureExists(LogDir);
+
+            // Older versions wrote these logs to the app data root.
+            MigrateLegacyLog("GreenLuma-Manager.log");
+            MigrateLegacyLog("GreenLuma-Manager.prev.log");
 
             // Rotate: rename previous session's log to .prev, start fresh
             if (File.Exists(LogPath))
@@ -30,6 +35,26 @@ public static class Logger
         catch
         {
             // Logging must never crash the application
+        }
+    }
+
+    /// <summary>
+    /// Moves a log written by an older version from the app data root into the
+    /// logs folder. Existing destination files are left untouched.
+    /// </summary>
+    private static void MigrateLegacyLog(string fileName)
+    {
+        try
+        {
+            var legacyPath = Path.Combine(PathDetector.AppDataDir, fileName);
+            var destinationPath = Path.Combine(LogDir, fileName);
+
+            if (File.Exists(legacyPath) && !File.Exists(destinationPath))
+                File.Move(legacyPath, destinationPath);
+        }
+        catch
+        {
+            // Best effort only; logging must never throw.
         }
     }
 

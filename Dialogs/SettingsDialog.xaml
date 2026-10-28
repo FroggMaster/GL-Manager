@@ -638,6 +638,12 @@
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
+                <Style.Triggers>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Opacity" Value="0.4" />
+                        <Setter Property="Cursor" Value="Arrow" />
+                    </Trigger>
+                </Style.Triggers>
             </Style>
 
             <Style x:Key="NavRadioButton" TargetType="{x:Type RadioButton}">
@@ -913,6 +919,8 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="12" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="8" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBox x:Name="TxtSteamPath" Style="{StaticResource InputTextBox}" />
                                         <Button
@@ -921,6 +929,13 @@
                                             Click="BrowseSteam_Click"
                                             Content="Browse"
                                             Style="{StaticResource StandardButton}" />
+                                        <Button
+                                            Grid.Column="4"
+                                            Width="80"
+                                            Click="OpenSteamFolder_Click"
+                                            Content="Open"
+                                            Style="{StaticResource StandardButton}"
+                                            ToolTip="Open the configured Steam directory in File Explorer" />
                                     </Grid>
                                 </StackPanel>
 
@@ -937,6 +952,8 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="12" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="8" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBox x:Name="TxtGreenLumaPath" Style="{StaticResource InputTextBox}" />
                                         <Button
@@ -946,6 +963,14 @@
                                             Click="BrowseGreenLuma_Click"
                                             Content="Browse"
                                             Style="{StaticResource StandardButton}" />
+                                        <Button
+                                            x:Name="BtnOpenGreenLuma"
+                                            Grid.Column="4"
+                                            Width="80"
+                                            Click="OpenGreenLumaFolder_Click"
+                                            Content="Open"
+                                            Style="{StaticResource StandardButton}"
+                                            ToolTip="Open the configured GreenLuma directory in File Explorer" />
                                     </Grid>
                                 </StackPanel>
 
@@ -1013,10 +1038,11 @@
                                         Content="Stealth Mode"
                                         Style="{StaticResource ToggleSwitch}" />
                                     <TextBlock
+                                        x:Name="TxtStealthModeDesc"
                                         Margin="0,4,60,0"
                                         FontSize="13"
                                         Foreground="{StaticResource TextTertiary}"
-                                        Text="Hides the DLLInjector injection process. Forced on when using StealthAny."
+                                        Text="Hides the DLLInjector injection process."
                                         TextWrapping="Wrap" />
                                 </StackPanel>
                             </StackPanel>
@@ -1360,7 +1386,7 @@
                                             Margin="0,4,0,0"
                                             FontSize="13"
                                             Foreground="{StaticResource TextSecondary}"
-                                            Text="Open the folder containing configuration, profiles, plugins, icons, and logs."
+                                            Text="Open the folder containing configuration, profiles, plugins, backups, icons, and logs."
                                             TextWrapping="Wrap" />
                                     </StackPanel>
                                     <Button
@@ -1381,18 +1407,18 @@
                                             FontSize="15"
                                             FontWeight="SemiBold"
                                             Foreground="{StaticResource Text}"
-                                            Text="Diagnostics Log" />
+                                            Text="Open Log Directory" />
                                         <TextBlock
                                             Margin="0,4,0,0"
                                             FontSize="13"
                                             Foreground="{StaticResource TextSecondary}"
-                                            Text="Open the launch diagnostics log used for troubleshooting startup issues."
+                                            Text="Open the folder containing the application log and launch diagnostics."
                                             TextWrapping="Wrap" />
                                     </StackPanel>
                                     <Button
                                         Grid.Column="1"
                                         VerticalAlignment="Center"
-                                        Click="OpenDiagnosticsLog_Click"
+                                        Click="OpenLogDirectory_Click"
                                         Content="Open"
                                         Style="{StaticResource StandardButton}" />
                                 </Grid>
@@ -1420,6 +1446,84 @@
                                         VerticalAlignment="Center"
                                         Click="ClearIconCache_Click"
                                         Content="Clear"
+                                        Style="{StaticResource StandardButton}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border
+                            Margin="0,0,0,20"
+                            Padding="24"
+                            Background="{StaticResource BackgroundSurface}"
+                            BorderBrush="{StaticResource Border}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock
+                                    Margin="0,0,0,12"
+                                    FontSize="12"
+                                    FontWeight="Bold"
+                                    Foreground="{StaticResource TextTertiary}"
+                                    Text="BACKUP AND RESTORE" />
+
+                                <TextBlock
+                                    Margin="0,0,0,20"
+                                    FontSize="13"
+                                    Foreground="{StaticResource TextTertiary}"
+                                    Text="Backups include settings, profiles, and plugin configuration, but not plugin files or cached data. They also contain saved credentials and your Steam Web API key, so store backup files securely."
+                                    TextWrapping="Wrap" />
+
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock
+                                            FontSize="15"
+                                            FontWeight="SemiBold"
+                                            Foreground="{StaticResource Text}"
+                                            Text="Export Settings" />
+                                        <TextBlock
+                                            Margin="0,4,0,0"
+                                            FontSize="13"
+                                            Foreground="{StaticResource TextSecondary}"
+                                            Text="Export your saved settings, profiles, and plugin configuration to a backup file."
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button
+                                        x:Name="BtnExportSettings"
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Click="ExportSettings_Click"
+                                        Content="Export"
+                                        Style="{StaticResource StandardButton}" />
+                                </Grid>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock
+                                            FontSize="15"
+                                            FontWeight="SemiBold"
+                                            Foreground="{StaticResource Text}"
+                                            Text="Import Settings" />
+                                        <TextBlock
+                                            Margin="0,4,0,0"
+                                            FontSize="13"
+                                            Foreground="{StaticResource TextSecondary}"
+                                            Text="Restore settings, profiles, and plugin configuration from a backup file. The application will close to apply them."
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button
+                                        x:Name="BtnImportSettings"
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Click="ImportSettings_Click"
+                                        Content="Import"
                                         Style="{StaticResource StandardButton}" />
                                 </Grid>
                             </StackPanel>

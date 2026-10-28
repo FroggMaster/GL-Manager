@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using GreenLuma_Manager.Models;
 
@@ -149,99 +150,193 @@ public partial class UpdateService
 
     public static async Task<bool> PerformAutoUpdateAsync(string downloadUrl)
     {
+        string? stagingDir = null;
+
         try
         {
             Logger.Info($"Performing auto-update from: {downloadUrl}");
-            var currentExePath = Environment.ProcessPath!;
-            var tempExePath = await DownloadUpdate(downloadUrl);
 
-            CreateAndExecuteUpdateScript(tempExePath, currentExePath);
+            var currentExePath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(currentExePath) || !File.Exists(currentExePath))
+            {
+                Logger.Error("Auto-update failed: could not resolve the running executable path");
+                return false;
+            }
 
+            stagingDir = Path.Combine(Path.GetTempPath(), $"GLM_Update_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(stagingDir);
+
+            var tempExePath = await DownloadUpdate(downloadUrl, stagingDir);
+
+            CreateAndExecuteUpdateScript(stagingDir, tempExePath, currentExePath);
+
+            Logger.Info("Update script started; shutting down to apply the update");
             return true;
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Auto-update failed");
+            TryDeleteDirectory(stagingDir);
             return false;
         }
     }
 
-    private static async Task<string> DownloadUpdate(string downloadUrl)
+    private static async Task<string> DownloadUpdate(string downloadUrl, string stagingDir)
     {
-        var tempDir = Path.GetTempPath();
-        var tempExePath = Path.Combine(tempDir, "GreenLumaManager_Update.exe");
+        var tempExePath = Path.Combine(stagingDir, "GreenLuma-Manager.exe");
 
-        using var response = await Client.GetAsync(downloadUrl);
+        using var response = await Client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
 
-        await using var fileStream = new FileStream(tempExePath, FileMode.Create, FileAccess.Write, FileShare.None);
-        await response.Content.CopyToAsync(fileStream);
+        await using (var fileStream = new FileStream(
+                         tempExePath,
+                         FileMode.Create,
+                         FileAccess.Write,
+                         FileShare.None,
+                         81920,
+                         useAsync: true))
+        {
+            await response.Content.CopyToAsync(fileStream);
+        }
 
+        // Never let an error page or a truncated download replace the app.
+        var downloaded = new FileInfo(tempExePath);
+        if (downloaded.Length < 1024)
+            throw new InvalidDataException($"Downloaded update is too small ({downloaded.Length} bytes).");
+
+        using (var headerStream = File.OpenRead(tempExePath))
+        {
+            if (headerStream.ReadByte() != 'M' || headerStream.ReadByte() != 'Z')
+                throw new InvalidDataException("Downloaded update is not a valid Windows executable.");
+        }
+
+        Logger.Info($"Update downloaded to '{tempExePath}' ({downloaded.Length} bytes)");
         return tempExePath;
     }
 
-    private static void CreateAndExecuteUpdateScript(string tempExePath, string currentExePath)
+    private static void CreateAndExecuteUpdateScript(string stagingDir, string tempExePath, string currentExePath)
     {
-        var scriptPath = Path.Combine(Path.GetTempPath(), "update.bat");
-        var scriptContent = GenerateUpdateScript(tempExePath, currentExePath);
+        var scriptPath = Path.Combine(stagingDir, "update.ps1");
+        var scriptContent = GenerateUpdateScript(stagingDir, scriptPath, tempExePath, currentExePath);
 
-        File.WriteAllText(scriptPath, scriptContent);
+        // Windows PowerShell 5.1 needs a BOM to read non-ASCII paths correctly.
+        File.WriteAllText(scriptPath, scriptContent, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
 
         Process.Start(new ProcessStartInfo
         {
-            FileName = scriptPath,
+            FileName = "powershell.exe",
+            Arguments =
+                $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"",
             CreateNoWindow = true,
             UseShellExecute = false,
-            WindowStyle = ProcessWindowStyle.Hidden
+            WindowStyle = ProcessWindowStyle.Hidden,
+            WorkingDirectory = Path.GetTempPath()
         });
     }
 
-    private static string GenerateUpdateScript(string tempExePath, string currentExePath)
+    private static string GenerateUpdateScript(
+        string stagingDir,
+        string scriptPath,
+        string tempExePath,
+        string currentExePath)
     {
-        var currentExeName = Path.GetFileName(currentExePath);
+        var currentExeDir = Path.GetDirectoryName(currentExePath) ?? string.Empty;
+        var backupPath = currentExePath + ".old";
 
-        return $@"@echo off
-echo Waiting for application to close...
-timeout /t 2 /nobreak >nul
+        return $$"""
+            $ErrorActionPreference = 'Stop'
 
-taskkill /F /IM ""{currentExeName}"" >nul 2>&1
+            $processId = {{Environment.ProcessId}}
+            $source = '{{EscapePowerShellLiteral(tempExePath)}}'
+            $target = '{{EscapePowerShellLiteral(currentExePath)}}'
+            $backup = '{{EscapePowerShellLiteral(backupPath)}}'
+            $workingDirectory = '{{EscapePowerShellLiteral(currentExeDir)}}'
+            $scriptPath = '{{EscapePowerShellLiteral(scriptPath)}}'
+            $stagingDirectory = '{{EscapePowerShellLiteral(stagingDir)}}'
 
-echo Waiting for process to fully terminate...
-:wait_process
-tasklist /FI ""IMAGENAME eq {currentExeName}"" 2>NUL | find /I /N ""{currentExeName}"">NUL
-if ""%ERRORLEVEL%""==""0"" (
-    timeout /t 1 /nobreak >nul
-    goto wait_process
-)
+            function Wait-ForApplicationExit {
+                param([int]$Id, [int]$TimeoutSeconds = 30)
 
-echo Process terminated.
-echo Updating...
+                $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+                while ($true) {
+                    if ($null -eq (Get-Process -Id $Id -ErrorAction SilentlyContinue)) {
+                        return $true
+                    }
+                    if ((Get-Date) -gt $deadline) {
+                        return $false
+                    }
+                    Start-Sleep -Milliseconds 200
+                }
+            }
 
-del ""{currentExePath}"" >nul 2>&1
-:wait_delete
-if exist ""{currentExePath}"" (
-    timeout /t 1 /nobreak >nul
-    del ""{currentExePath}"" >nul 2>&1
-    goto wait_delete
-)
+            function Move-WithRetry {
+                param([string]$Source, [string]$Destination, [int]$TimeoutSeconds = 10)
 
-move /y ""{tempExePath}"" ""{currentExePath}""
-if errorlevel 1 (
-    echo Update failed!
-    pause
-    exit /b 1
-)
+                $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+                while ($true) {
+                    try {
+                        Move-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+                        return
+                    }
+                    catch {
+                        if ((Get-Date) -gt $deadline) {
+                            throw
+                        }
+                        Start-Sleep -Milliseconds 250
+                    }
+                }
+            }
 
-echo.
-echo ========================================
-echo Update Complete!
-echo ========================================
-echo.
-echo Restarting GreenLuma Manager...
-timeout /t 2 /nobreak >nul
+            $replaced = $false
+            try {
+                if (-not (Wait-ForApplicationExit -Id $processId)) {
+                    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                }
 
-start """" ""{currentExePath}""
-exit
-";
+                Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+                Move-WithRetry -Source $target -Destination $backup
+
+                try {
+                    Move-WithRetry -Source $source -Destination $target
+                    $replaced = $true
+                }
+                catch {
+                    Move-WithRetry -Source $backup -Destination $target
+                    throw
+                }
+            }
+            finally {
+                if (Test-Path -LiteralPath $target) {
+                    Start-Process -FilePath $target -WorkingDirectory $workingDirectory
+                }
+
+                if ($replaced) {
+                    Start-Sleep -Milliseconds 750
+                    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+                }
+
+                Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            """;
+    }
+
+    private static string EscapePowerShellLiteral(string value) => value.Replace("'", "''");
+
+    private static void TryDeleteDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug($"Could not remove update staging directory '{path}': {ex.Message}");
+        }
     }
 }

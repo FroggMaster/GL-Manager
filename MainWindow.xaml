@@ -2814,13 +2814,6 @@
                         TextTrimming="CharacterEllipsis"
                         Visibility="Collapsed" />
                 </StackPanel>
-
-                <TextBlock
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Center"
-                    FontSize="11"
-                    Foreground="{StaticResource TextTertiary}"
-                    Text="Copyright © FroggMaster 2026" />
             </Grid>
         </Border>
 

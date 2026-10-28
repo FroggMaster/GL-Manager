@@ -8,6 +8,16 @@ public class GreenLumaVersionInfo
     public const string ForumUrl = "https://cs.rin.ru/forum/viewtopic.php?f=29&t=103709";
 
     /// <summary>
+    /// Product name of the installed DLL, for example "GreenLuma" or "GreenLumaRE".
+    /// </summary>
+    public string ProductName { get; set; } = "GreenLuma";
+
+    /// <summary>
+    /// True when the installed DLL is the GreenLumaRE variant.
+    /// </summary>
+    public bool IsGreenLumaRe { get; set; }
+
+    /// <summary>
     /// Raw version string from the forum (e.g., "1.7.8").
     /// </summary>
     public required string LatestVersionTag { get; set; }

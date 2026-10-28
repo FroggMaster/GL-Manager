@@ -104,41 +104,126 @@ public partial class GreenLumaService
         return (year, arch, dllPath);
     }
 
-    public static (Version? FileVersion, string? DllPath) DetectInstalledVersion(string greenLumaPath)
+    /// <summary>
+    /// Detects the GreenLuma DLL in the given directory and reads its product
+    /// identity and version from the embedded file metadata.
+    /// </summary>
+    public static GreenLumaInstallationInfo? DetectInstalledInstallation(string greenLumaPath)
     {
         if (!PathDetector.IsValidDirectory(greenLumaPath))
-            return (null, null);
+            return null;
 
         var (_, _, dllPath) = FindInstalledDll(greenLumaPath);
-
-        if (dllPath == null)
-            return (null, null);
-
-        Version? fileVersion = null;
-        try
-        {
-            var versionStr = FileVersionInfo.GetVersionInfo(dllPath).FileVersion;
-            if (versionStr is not null && Version.TryParse(versionStr, out var fullVersion))
-            {
-                // Strip revision so "1.7.3.0" displays as "1.7.3"
-                fileVersion = new Version(fullVersion.Major, fullVersion.Minor, Math.Max(0, fullVersion.Build));
-            }
-        }
-        catch
-        {
-            // ignored
-        }
-
-        return (fileVersion, dllPath);
+        return dllPath == null ? null : ReadDllInstallation(dllPath);
     }
 
     /// <summary>
-    /// Detects the active GreenLuma installation method.
-    /// Always checks every path (no early returns) so callers can rely on it
-    /// being a complete picture.  When <paramref name="preferredMode"/> is
-    /// non-empty and matches an available installation it is returned;
-    /// otherwise the default priority (System DLL Proxy, Normal, StealthAny,
-    /// None) is used.
+    /// Detects the DLL that is actually active for the configured mode. In
+    /// System DLL Proxy mode this is the deployed proxy file (for example
+    /// user32.dll), whose embedded metadata identifies the GreenLuma variant.
+    /// </summary>
+    public static GreenLumaInstallationInfo? DetectActiveInstallation(Config config)
+    {
+        var method = DetectInstallMethod(
+            config.SteamPath,
+            config.GreenLumaPath,
+            config.PreferredMode,
+            config.SystemProxyDllName);
+
+        if (method == GreenLumaInstallMethod.User32 &&
+            !string.IsNullOrWhiteSpace(config.SteamPath))
+        {
+            var proxyPath = SystemProxyDll.GetPath(config.SteamPath, config.SystemProxyDllName);
+            if (File.Exists(proxyPath))
+            {
+                var proxyInfo = ReadDllInstallation(proxyPath);
+                if (proxyInfo != null)
+                    return proxyInfo;
+            }
+        }
+
+        return DetectInstalledInstallation(config.GreenLumaPath);
+    }
+
+    private static GreenLumaInstallationInfo? ReadDllInstallation(string dllPath)
+    {
+        if (string.IsNullOrWhiteSpace(dllPath) || !File.Exists(dllPath))
+            return null;
+
+        var fileName = Path.GetFileName(dllPath);
+        var isGreenLumaRe = fileName.StartsWith("GreenLumaRE_", StringComparison.OrdinalIgnoreCase) ||
+                            fileName.StartsWith("GreenLumaRE.", StringComparison.OrdinalIgnoreCase);
+        var productName = isGreenLumaRe ? "GreenLumaRE" : "GreenLuma";
+        Version? version = null;
+
+        try
+        {
+            var fileInfo = FileVersionInfo.GetVersionInfo(dllPath);
+            var embeddedProduct = fileInfo.ProductName?.Trim();
+            var description = fileInfo.FileDescription?.Trim();
+
+            if (embeddedProduct?.Contains("GreenLumaRE", StringComparison.OrdinalIgnoreCase) == true ||
+                description?.Contains("GreenLumaRE", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                isGreenLumaRe = true;
+            }
+
+            if (isGreenLumaRe)
+            {
+                productName = "GreenLumaRE";
+            }
+            else if (!string.IsNullOrWhiteSpace(embeddedProduct) &&
+                     embeddedProduct.Contains("GreenLuma", StringComparison.OrdinalIgnoreCase))
+            {
+                productName = embeddedProduct;
+            }
+            else if (!string.IsNullOrWhiteSpace(description) &&
+                     description.Contains("GreenLuma", StringComparison.OrdinalIgnoreCase))
+            {
+                productName = description;
+            }
+
+            version = ParseDllVersion(fileInfo.FileVersion)
+                      ?? ParseDllVersion(fileInfo.ProductVersion);
+        }
+        catch
+        {
+            // Version metadata is optional; the file name still identifies the variant.
+        }
+
+        return new GreenLumaInstallationInfo
+        {
+            ProductName = productName,
+            IsGreenLumaRe = isGreenLumaRe,
+            Version = version,
+            DllPath = dllPath
+        };
+    }
+
+    public static (Version? FileVersion, string? DllPath) DetectInstalledVersion(string greenLumaPath)
+    {
+        var installation = DetectInstalledInstallation(greenLumaPath);
+        return (installation?.Version, installation?.DllPath);
+    }
+
+    private static Version? ParseDllVersion(string? versionString)
+    {
+        if (string.IsNullOrWhiteSpace(versionString) ||
+            !Version.TryParse(versionString, out var fullVersion))
+        {
+            return null;
+        }
+
+        // Strip revision so "1.7.3.0" displays as "1.7.3".
+        return new Version(fullVersion.Major, fullVersion.Minor, Math.Max(0, fullVersion.Build));
+    }
+
+    /// <summary>
+    /// Detects the active GreenLuma installation method. Every path is checked
+    /// before deciding. An enabled system DLL proxy always wins because Steam
+    /// loads it automatically; otherwise the saved preference is honored when
+    /// it matches an available injector-based installation. Without a matching
+    /// preference, StealthAny is preferred over Normal.
     /// </summary>
     /// <param name="systemProxyDll">
     /// Filename of the configured system DLL proxy. Only this name counts as
@@ -163,37 +248,45 @@ public partial class GreenLumaService
         var hasStealthAny = HasStealthAnyFiles(greenLumaPath) &&
                             PathsAreDistinct(greenLumaPath, steamPath);
 
-        var count = (hasSystemProxy ? 1 : 0) + (hasNormal ? 1 : 0) + (hasStealthAny ? 1 : 0);
+        // Steam loads the proxy DLL automatically, so an enabled proxy is
+        // always the effective mode. A saved preference for another mode
+        // cannot override it.
+        if (hasSystemProxy)
+            return GreenLumaInstallMethod.User32;
+
+        var count = (hasNormal ? 1 : 0) + (hasStealthAny ? 1 : 0);
         if (count == 0)
             return GreenLumaInstallMethod.None;
 
-        // Only one mode, so it is unambiguous
+        // Only one injector-based mode is available.
         if (count == 1)
         {
-            if (hasSystemProxy) return GreenLumaInstallMethod.User32;
-            if (hasNormal) return GreenLumaInstallMethod.Normal;
-            return GreenLumaInstallMethod.StealthAny;
+            return hasNormal
+                ? GreenLumaInstallMethod.Normal
+                : GreenLumaInstallMethod.StealthAny;
         }
 
-        // Multiple modes: honour the saved preference when it still exists
+        // Normal and StealthAny coexist: honour the saved preference.
         if (!string.IsNullOrWhiteSpace(preferredMode))
         {
-            if (hasSystemProxy && preferredMode.Equals(GreenLumaInstallMethod.User32.ToString(), StringComparison.OrdinalIgnoreCase))
-                return GreenLumaInstallMethod.User32;
-            if (hasNormal && preferredMode.Equals(GreenLumaInstallMethod.Normal.ToString(), StringComparison.OrdinalIgnoreCase))
+            if (preferredMode.Equals(
+                    GreenLumaInstallMethod.Normal.ToString(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
                 return GreenLumaInstallMethod.Normal;
-            if (hasStealthAny && preferredMode.Equals(GreenLumaInstallMethod.StealthAny.ToString(), StringComparison.OrdinalIgnoreCase))
+            }
+
+            if (preferredMode.Equals(
+                    GreenLumaInstallMethod.StealthAny.ToString(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
                 return GreenLumaInstallMethod.StealthAny;
+            }
         }
 
-        // Default priority
-        if (hasSystemProxy) return GreenLumaInstallMethod.User32;
-        // When the user has configured a distinct GreenLuma directory with
-        // valid StealthAny files, prefer StealthAny over Normal. Normal
-        // files in SteamPath are often leftovers from a previous install.
-        if (hasStealthAny) return GreenLumaInstallMethod.StealthAny;
-        if (hasNormal) return GreenLumaInstallMethod.Normal;
-        return GreenLumaInstallMethod.None;
+        // Prefer StealthAny over Normal: Normal files in SteamPath are often
+        // leftovers from a previous install.
+        return GreenLumaInstallMethod.StealthAny;
     }
 
     /// <summary>

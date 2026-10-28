@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using Microsoft.Win32;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -138,19 +139,29 @@ public partial class SettingsDialog
             _inDisplayMode = false;
             _userGreenLumaPath = null;
 
+            var steamPath = NormalizePath(TxtSteamPath.Text);
+            var selectedPath = NormalizePath(selected);
+
+            // A folder outside the Steam directory is an explicit StealthAny
+            // choice. Classify it before refreshing the display-only Steam
+            // path, otherwise the selection is overwritten and appears ignored.
+            if (GreenLumaService.PathsAreDistinct(selectedPath, steamPath))
+            {
+                await ClassifyAndHandleSelectedFolderAsync(steamPath, selectedPath);
+                return;
+            }
+
             UpdateGreenLumaPathUI();
             CheckMixedInstallState();
-
-            var steamPath = NormalizePath(TxtSteamPath.Text);
-            await ClassifyAndHandleSelectedFolderAsync(steamPath, selected);
+            await ClassifyAndHandleSelectedFolderAsync(steamPath, selectedPath);
         }
     }
 
     /// <summary>
     /// Classifies a user-selected GreenLuma folder and routes to the existing setup flows.
     /// - Steam directory: offer the GreenLuma method (Normal / System DLL Proxy / SF variant).
-    /// - Distinct directory with an existing StealthAny install: nothing to do.
-    /// - Distinct (possibly empty) directory without GreenLuma: offer to download/deploy StealthAny.
+    /// - Distinct directory with an existing StealthAny install: switch to StealthAny.
+    /// - Distinct (possibly empty) directory without GreenLuma: switch to StealthAny and offer to download/deploy.
     /// </summary>
     private async Task ClassifyAndHandleSelectedFolderAsync(string steamPath, string selectedPath)
     {
@@ -245,11 +256,13 @@ public partial class SettingsDialog
         // B) A directory distinct from Steam.
         if (GreenLumaService.HasStealthAnyFiles(selected))
         {
-            // Existing StealthAny install: keep the selected path, no prompt.
-            if (string.IsNullOrWhiteSpace(_config.PreferredMode))
-                _config.PreferredMode = GreenLumaInstallMethod.StealthAny.ToString();
+            // Browsing to a distinct folder is an explicit choice, so leave
+            // Normal / System DLL Proxy and make the selected folder the
+            // StealthAny location.  Without this the display-only Steam path
+            // would stay in the textbox and the selection would look ignored.
+            _config.PreferredMode = GreenLumaInstallMethod.StealthAny.ToString();
             _config.LastStealthAnyPath = selected;
-            LoadGreenLumaModeSelection();
+            ApplyStealthAnySelection(selected);
             return;
         }
 
@@ -263,13 +276,35 @@ public partial class SettingsDialog
         // Keep the selected path regardless of the answer.
         _config.PreferredMode = GreenLumaInstallMethod.StealthAny.ToString();
         _config.LastStealthAnyPath = selected;
-        LoadGreenLumaModeSelection();
+        ApplyStealthAnySelection(selected);
 
         if (deployChoice == MessageBoxResult.Yes)
         {
             await DownloadAndDeployGreenLumaAsync(
                 steam, selected, GreenLumaInstallMethod.StealthAny, null, false, GetSelectedSystemProxyDll());
         }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="selectedPath"/> the active GreenLuma directory and
+    /// switches the dialog to StealthAny. Used when the user browses to a folder
+    /// while a display-only mode (Normal / System DLL Proxy) is active and the
+    /// textbox otherwise keeps showing the Steam directory.
+    /// </summary>
+    private void ApplyStealthAnySelection(string selectedPath)
+    {
+        var path = NormalizePath(selectedPath);
+
+        TxtGreenLumaPath.Text = path;
+        _inDisplayMode = false;
+        _userGreenLumaPath = path;
+
+        TxtGreenLumaDesc.Text = "The folder where DLLInjector.exe and GreenLuma files are located.";
+        TxtGreenLumaPath.ToolTip = null;
+        PanelGreenLumaDir.Opacity = 1.0;
+
+        LoadGreenLumaModeSelection();
+        UpdateStealthModeState();
     }
 
     private void AutoDetect_Click(object sender, RoutedEventArgs e)
@@ -337,6 +372,61 @@ public partial class SettingsDialog
                 new Bold(new Run("GreenLuma Folder: ")),
                 new Run(glFolder)
             ], MessageBoxImage.Asterisk);
+        }
+    }
+
+    private void OpenSteamFolder_Click(object sender, RoutedEventArgs e)
+    {
+        OpenDirectoryInExplorer(TxtSteamPath.Text, "Steam");
+    }
+
+    private void OpenGreenLumaFolder_Click(object sender, RoutedEventArgs e)
+    {
+        OpenDirectoryInExplorer(TxtGreenLumaPath.Text, "GreenLuma");
+    }
+
+    /// <summary>
+    /// Opens <paramref name="path"/> in File Explorer, showing a message when the
+    /// directory is not configured or no longer exists.
+    /// </summary>
+    private void OpenDirectoryInExplorer(string? path, string label)
+    {
+        var target = NormalizePath(path);
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            CustomMessageBox.Show(
+                $"No {label} directory is configured yet.\n\nUse Browse to select one first.",
+                "Open Directory",
+                icon: MessageBoxImage.Information);
+            return;
+        }
+
+        if (!Directory.Exists(target))
+        {
+            CustomMessageBox.Show(
+                $"The configured {label} directory does not exist:\n{target}",
+                "Open Directory",
+                icon: MessageBoxImage.Exclamation);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{target}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"Failed to open {label} directory");
+            CustomMessageBox.Show(
+                $"Could not open the {label} directory.",
+                "Open Directory",
+                icon: MessageBoxImage.Exclamation);
         }
     }
 
@@ -587,6 +677,10 @@ public partial class SettingsDialog
     {
         if (!_loaded || _syncingProxyDll) return;
         UpdateSystemProxyDllCustomVisibility();
+
+        // Auto-Detect resolves the mode from the selected proxy name, so the
+        // Stealth Mode availability can change without a mode change.
+        UpdateStealthModeState();
     }
 
     private void UpdateSystemProxyDllCustomVisibility()
@@ -615,23 +709,73 @@ public partial class SettingsDialog
     {
         if (ChkStealthMode == null) return;
 
-        var method = GetEffectiveMode();
-        if (method == GreenLumaInstallMethod.StealthAny)
-        {
-            ChkStealthMode.IsChecked = true;
-            ChkStealthMode.IsEnabled = false;
-            ChkStealthMode.ToolTip = "StealthAny mode always uses Stealth Mode.";
-        }
-        else if (method == GreenLumaInstallMethod.User32)
-        {
-            ChkStealthMode.IsEnabled = false;
-            ChkStealthMode.ToolTip = "Stealth Mode is not configurable while the system DLL proxy is active.";
-        }
-        else
+        if (IsStealthModeApplicable())
         {
             ChkStealthMode.IsEnabled = true;
             ChkStealthMode.ToolTip = null;
+
+            if (TxtStealthModeDesc != null)
+            {
+                TxtStealthModeDesc.Text = "Hides the DLLInjector injection process.";
+                TxtStealthModeDesc.Opacity = 1.0;
+            }
         }
+        else
+        {
+            ChkStealthMode.IsEnabled = false;
+            ChkStealthMode.ToolTip = "Stealth Mode is not used with the system DLL proxy.";
+
+            if (TxtStealthModeDesc != null)
+            {
+                TxtStealthModeDesc.Text = "Not used with System DLL Proxy mode.";
+                TxtStealthModeDesc.Opacity = 0.4;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stealth Mode only affects DLLInjector-based launches. It applies to
+    /// Normal and StealthAny modes, and to Auto-Detect when any DLLInjector
+    /// installation is present. An explicit System DLL Proxy choice never uses
+    /// the injector, so the setting is disabled there.
+    /// </summary>
+    private bool IsStealthModeApplicable()
+    {
+        if (GetEffectiveMode() != GreenLumaInstallMethod.User32)
+            return true;
+
+        // Auto-Detect can resolve to System DLL Proxy by priority while a
+        // DLLInjector-based installation also exists. Keep the setting
+        // available in that case because the user may launch that install.
+        return IsAutoDetectSelected() && HasDllInjectorInstall();
+    }
+
+    private bool IsAutoDetectSelected()
+    {
+        return CmbGreenLumaMode?.SelectedItem is not ComboBoxItem { Tag: string tag } ||
+               string.IsNullOrWhiteSpace(tag);
+    }
+
+    private bool HasDllInjectorInstall()
+    {
+        var steamPath = NormalizePath(TxtSteamPath.Text);
+        var greenLumaPath = NormalizePath(TxtGreenLumaPath.Text);
+
+        var hasNormal = !string.IsNullOrWhiteSpace(steamPath) &&
+                        File.Exists(Path.Combine(steamPath, "DLLInjector.exe")) &&
+                        GreenLumaService.HasGreenLumaDll(steamPath);
+        if (hasNormal)
+            return true;
+
+        if (GreenLumaService.HasStealthAnyFiles(greenLumaPath) &&
+            GreenLumaService.PathsAreDistinct(greenLumaPath, steamPath))
+            return true;
+
+        // Auto-Detect remembers the last StealthAny folder separately when the
+        // main path is pinned to the Steam directory by another mode.
+        var lastStealthAny = NormalizePath(_config.LastStealthAnyPath);
+        return GreenLumaService.HasStealthAnyFiles(lastStealthAny) &&
+               GreenLumaService.PathsAreDistinct(lastStealthAny, steamPath);
     }
 
     private void GreenLumaMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -646,24 +790,10 @@ public partial class SettingsDialog
 
             var steamPath = NormalizePath(TxtSteamPath.Text);
 
-            // When the user explicitly picks Normal or StealthAny, disable the
-            // system DLL proxy if it exists. Otherwise it auto-injects and
-            // overrides the chosen mode on the next Steam launch.
-            if (!string.IsNullOrEmpty(tag) &&
-                !string.Equals(tag, GreenLumaInstallMethod.User32.ToString(), StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(steamPath))
-            {
-                var proxyName = SystemProxyDll.Normalize(GetSelectedSystemProxyDll());
-                if (File.Exists(SystemProxyDll.GetPath(steamPath, proxyName)) &&
-                    ConfirmProxyOwnership(steamPath, proxyName))
-                {
-                    GreenLumaService.DisableSystemProxy(steamPath, proxyName);
-                }
-            }
-
-            // NOTE: Config is intentionally NOT saved here.  The mode change
-            // stays in memory so the UI can preview what would happen, but
-            // nothing is persisted until Ok_Click confirms the dialog.
+            // NOTE: Config is intentionally NOT saved here, and proxy files
+            // are NOT changed here. The mode change stays in memory so the UI
+            // can preview it, and Ok_Click applies the final proxy state when
+            // the dialog is saved.
 
             // Directly set the GL path based on the selected mode instead of
             // relying on UpdateGreenLumaPathUI's detection-based logic.  This
@@ -734,6 +864,60 @@ public partial class SettingsDialog
         _config.SystemProxyDllName = proxyName;
         _config.DeployedSystemProxyDll = proxyName;
         ConfigService.Save(_config);
+    }
+
+    /// <summary>
+    /// Applies the final mode's proxy state when settings are saved. Mode
+    /// changes in the dialog do not touch the proxy file, so cancelling the
+    /// dialog cannot leave the installation altered. System DLL Proxy mode
+    /// activates the selected proxy; every other mode disables app-owned
+    /// proxies so none can auto-inject and override the selected mode.
+    /// </summary>
+    private void ApplySystemProxyStateForMode(string steamPath, string proxyName)
+    {
+        if (string.IsNullOrWhiteSpace(steamPath))
+            return;
+
+        // Use the final saved mode, not the ComboBox state. Auto-Detect may
+        // have resolved a preference during the save flow.
+        var finalMode = !string.IsNullOrWhiteSpace(_config.PreferredMode) &&
+                        Enum.TryParse<GreenLumaInstallMethod>(
+                            _config.PreferredMode, ignoreCase: true, out var preferredMode)
+            ? preferredMode
+            : GreenLumaService.DetectInstallMethod(steamPath, _config.GreenLumaPath, null, proxyName);
+
+        if (finalMode == GreenLumaInstallMethod.User32)
+        {
+            var proxyPath = SystemProxyDll.GetPath(steamPath, proxyName);
+            var disabledPath = SystemProxyDll.GetDisabledPath(steamPath, proxyName);
+
+            if (!File.Exists(proxyPath) && File.Exists(disabledPath))
+                GreenLumaService.EnableSystemProxy(steamPath, proxyName);
+
+            return;
+        }
+
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var name in SystemProxyDll.FindPresentProxies(steamPath))
+            candidates.Add(name);
+
+        candidates.Add(SystemProxyDll.Normalize(proxyName));
+
+        if (!string.IsNullOrWhiteSpace(_config.DeployedSystemProxyDll))
+            candidates.Add(SystemProxyDll.Normalize(_config.DeployedSystemProxyDll));
+
+        if (!string.IsNullOrWhiteSpace(_config.SystemProxyDllName))
+            candidates.Add(SystemProxyDll.Normalize(_config.SystemProxyDllName));
+
+        foreach (var name in candidates)
+        {
+            if (!File.Exists(SystemProxyDll.GetPath(steamPath, name)))
+                continue;
+
+            if (ConfirmProxyOwnership(steamPath, name))
+                GreenLumaService.DisableSystemProxy(steamPath, name);
+        }
     }
 
     /// <summary>
@@ -843,38 +1027,119 @@ public partial class SettingsDialog
         }
     }
 
-    private void OpenDiagnosticsLog_Click(object sender, RoutedEventArgs e)
+    private void ExportSettings_Click(object sender, RoutedEventArgs e)
     {
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export Settings",
+            FileName = $"GreenLuma-Manager-backup-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+            DefaultExt = ".zip",
+            Filter = "GreenLuma Manager backup (*.zip)|*.zip|All files (*.*)|*.*",
+            AddExtension = true,
+            OverwritePrompt = true
+        };
+
+        if (dialog.ShowDialog(this) != true)
+            return;
+
         try
         {
-            var logPath = LaunchDiagnostics.FilePath;
-            if (File.Exists(logPath))
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = $"/select,\"{logPath}\"",
-                    UseShellExecute = true
-                });
-                return;
-            }
+            SettingsBackupService.Export(dialog.FileName);
 
-            var logDir = Path.GetDirectoryName(logPath);
-            if (!string.IsNullOrWhiteSpace(logDir))
-            {
-                PathDetector.EnsureExists(logDir);
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = $"\"{logDir}\"",
-                    UseShellExecute = true
-                });
-            }
+            CustomMessageBox.Show(
+                "Settings exported successfully.\n\n" +
+                "Keep this file secure: it contains saved credentials and your Steam Web API key.\n\n" +
+                dialog.FileName,
+                "Export Complete",
+                icon: MessageBoxImage.Asterisk);
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to open diagnostics log");
-            CustomMessageBox.Show("Could not open the diagnostics log.", "Maintenance",
+            Logger.Error(ex, "Failed to export settings backup");
+            CustomMessageBox.Show(
+                $"Could not export settings:\n{ex.Message}",
+                "Export Failed",
+                icon: MessageBoxImage.Exclamation);
+        }
+    }
+
+    private void ImportSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Import Settings",
+            DefaultExt = ".zip",
+            Filter = "GreenLuma Manager backup (*.zip)|*.zip|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var confirm = CustomMessageBox.Show(
+            "Importing will replace your current settings, profiles, and plugin configuration.\n\n" +
+            "A backup of your current state will be created in the application data folder, " +
+            "and the application will close so the imported settings can be loaded.\n\n" +
+            "Paths from the backup are restored as-is, so update them if you are restoring on a different PC.\n\n" +
+            "Continue?",
+            "Import Settings",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            var result = SettingsBackupService.Import(dialog.FileName);
+
+            var pluginSummary = result.IncludesPluginSettings
+                ? "Plugin configuration restored."
+                : "The backup contained no plugin configuration, so current plugin settings were cleared.";
+
+            CustomMessageBox.Show(
+                "Settings imported successfully.\n\n" +
+                $"Profiles restored: {result.ProfileCount}\n" +
+                pluginSummary + "\n\n" +
+                $"Previous state backed up to:\n{result.PreviousStateBackupPath}\n\n" +
+                "The application will now close. Reopen it to use the imported settings.",
+                "Import Complete",
+                icon: MessageBoxImage.Asterisk);
+
+            Application.Current.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to import settings backup");
+            CustomMessageBox.Show(
+                $"Could not import settings:\n{ex.Message}",
+                "Import Failed",
+                icon: MessageBoxImage.Exclamation);
+        }
+    }
+
+    private void OpenLogDirectory_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var logDirectory = Path.GetDirectoryName(LaunchDiagnostics.FilePath);
+            if (string.IsNullOrWhiteSpace(logDirectory))
+                throw new InvalidOperationException("Could not resolve the log directory.");
+
+            PathDetector.EnsureExists(logDirectory);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{logDirectory}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to open log directory");
+            CustomMessageBox.Show("Could not open the log directory.", "Maintenance",
                 MessageBoxButton.OK, MessageBoxImage.Exclamation);
         }
     }
@@ -945,17 +1210,40 @@ public partial class SettingsDialog
                     "GreenLuma Update",
                     icon: MessageBoxImage.Exclamation);
             }
+            else if (result.IsGreenLumaRe)
+            {
+                var productName = string.IsNullOrWhiteSpace(result.ProductName)
+                    ? "GreenLumaRE"
+                    : result.ProductName;
+                var installed = result.InstalledVersion != null
+                    ? $"v{result.InstalledVersion}"
+                    : "an unknown version";
+
+                CustomMessageBox.Show(
+                    $"{productName} {installed} is installed.\n\n" +
+                    "GreenLumaRE is not distributed through the public GreenLuma update feed.",
+                    "GreenLumaRE Version",
+                    icon: MessageBoxImage.Asterisk);
+            }
             else if (result.UpdateAvailable)
             {
+                var productName = string.IsNullOrWhiteSpace(result.ProductName)
+                    ? "GreenLuma"
+                    : result.ProductName;
+
                 CustomMessageBox.Show(
-                    $"GreenLuma v{result.LatestSemanticVersion} is available. You have v{result.InstalledVersion}. Visit cs.rin.ru to download.",
+                    $"{productName} v{result.LatestSemanticVersion} is available. You have v{result.InstalledVersion}. Visit cs.rin.ru to download.",
                     "GreenLuma Update",
                     icon: MessageBoxImage.Asterisk);
             }
             else
             {
+                var productName = string.IsNullOrWhiteSpace(result.ProductName)
+                    ? "GreenLuma"
+                    : result.ProductName;
+
                 CustomMessageBox.Show(
-                    $"GreenLuma is up to date. (v{result.InstalledVersion} installed)",
+                    $"{productName} is up to date. (v{result.InstalledVersion} installed)",
                     "GreenLuma Update",
                     icon: MessageBoxImage.Asterisk);
             }
@@ -1565,20 +1853,6 @@ public partial class SettingsDialog
         if (!TryApplySystemProxyDll(steamPath, proxyName))
             return;
 
-        var method = GreenLumaService.DetectInstallMethod(steamPath, greenLumaPath, null, proxyName);
-        if (method == GreenLumaInstallMethod.StealthAny)
-        {
-            CustomMessageBox.Show(
-                "Only files required for Stealth Mode were detected.\n" +
-                "The application will be locked to Stealth Mode.\n\n" +
-                "Warning: Some GreenLuma features may not work without the full installation.",
-                "Stealth Mode Only",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-
-            _config.NoHook = true;
-        }
-
         _config.SteamPath = steamPath;
 
         if (string.IsNullOrWhiteSpace(_config.PreferredMode))
@@ -1644,10 +1918,11 @@ public partial class SettingsDialog
             _config.LastStealthAnyPath = _config.GreenLumaPath;
         }
 
-        var effectiveMode = GetEffectiveMode();
-        if (effectiveMode == GreenLumaInstallMethod.StealthAny)
-            _config.NoHook = true;
-        else if (effectiveMode != GreenLumaInstallMethod.User32)
+        // Apply the final mode's proxy state only when the dialog is saved.
+        // Switching modes in the dialog leaves the proxy file untouched.
+        ApplySystemProxyStateForMode(steamPath, proxyName);
+
+        if (IsStealthModeApplicable())
             _config.NoHook = ChkStealthMode.IsChecked.GetValueOrDefault();
 
         _config.ReplaceSteamAutostart = ChkReplaceSteamAutostart.IsChecked.GetValueOrDefault();
